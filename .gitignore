@@ -1,0 +1,56 @@
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# ===== 虚拟环境 / 工具 =====
+.venv/
+venv/
+.env
+runtime.json
+
+# ===== 数据库 =====
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# ===== 用户数据 — 整个 projects/ 都不跟踪 =====
+# 工具本身不含示例数据;用户在 GUI 里点"新建项目"创建自己的项目。
+# 这里屏蔽照片、标注、模型、配置、训练产物、缓存 — 一切都是用户运行时数据。
+projects/
+# 兜底:防止 .pt/.onnx 在其他位置(兼容旧用法)
+*.pt
+*.onnx
+projects/*/data/**/labels.cache
+
+# ===== 顶层 legacy 路径(已删除,但 gitignore 防止再次出现)=====
+/data/
+/models/
+/configs/
+/runs/
+/scripts/
+/gui/
+/exported_data/
+/project-1-at-*.zip
+
+# ===== 应用运行时生成 =====
+runtime.json         # launch.py 自动写入的 Python 解释器路径
+*.log
+*.tmp
+
+# ===== IDE =====
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+#暂时不需要
+install.sh

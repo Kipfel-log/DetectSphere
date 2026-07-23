@@ -1,0 +1,30 @@
+# ===== YOLO Studio 依赖 =====
+# 安装说明见 README.md
+
+# --- 深度学习 / YOLOv8 ---
+ultralytics>=8.2.0          # YOLOv8/v11 官方库
+# PyTorch (CUDA版) 需单独安装，见 README，不要用这里的 pip 直接装
+
+# --- GUI ---
+PySide6>=6.6.0              # Qt for Python(LGPL,官方绑定)
+PySide6-Fluent-Widgets[full]>=1.6.0  # Fluent Design 风格(qfluentwidgets)
+
+# --- 图像处理 ---
+opencv-python>=4.9.0
+Pillow>=10.0.0
+
+# --- 数据处理 ---
+numpy>=1.24.0
+PyYAML>=6.0                 # dataset.yaml 读写
+tqdm>=4.66.0
+requests>=2.31.0            # 与 Label Studio API 通信(后续阶段)
+
+# --- 可视化(训练曲线) ---
+matplotlib>=3.8.0           # TrainingProgressWidget 实时曲线
+
+# --- 凭据存储(Label Studio token) ---
+keyring>=24.0               # Windows DPAPI / macOS Keychain
+
+# --- 标注平台(可选,后续阶段) ---
+# label-studio 建议单独装(依赖多、对 Python 版本敏感)
+# label-studio>=1.11.0
