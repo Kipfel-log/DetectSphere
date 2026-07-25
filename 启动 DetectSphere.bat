@@ -1,9 +1,9 @@
 @echo off
-REM YOLO Studio 一键启动
+REM DetectSphere 一键启动
 REM launch.py 会自动发现带 ultralytics 的 Python 解释器
 
 echo ========================================
-echo   YOLO Studio
+echo   DetectSphere
 echo ========================================
 echo.
 

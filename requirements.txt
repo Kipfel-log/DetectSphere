@@ -1,4 +1,4 @@
-# ===== YOLO Studio 依赖 =====
+# ===== DetectSphere 依赖 =====
 # 安装说明见 README.md
 
 # --- 深度学习 / YOLOv8 ---

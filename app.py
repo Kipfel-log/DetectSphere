@@ -1,14 +1,18 @@
-"""YOLO Studio 主入口。
+"""DetectSphere 主入口。
 
 启动流程:
   1. 构造 QApplication
-  2. 弹出 LauncherDialog(项目选择/创建)
-  3. 用户选定项目后,关闭 LauncherDialog,打开 MainWindow
-  4. 退出时所有资源清理
+  2. while True:
+       a. 弹出 LauncherDialog(项目选择/创建)
+       b. 用户选定项目 → 打开 MainWindow
+       c. 用户关闭 MainWindow:
+          - 如果是 X 按钮或退出 → 退出 app
+          - 如果是「切换项目」→ 回到启动器
+  3. 退出时所有资源清理
 
 推荐运行方式:
   pythonw.exe launch.py         # 跨环境启动器
-  python app.py                 # 直接启动(需 PYTHONPATH 包含 yolo_studio)
+  python app.py                 # 直接启动
 """
 from __future__ import annotations
 
@@ -34,7 +38,6 @@ from yolo_studio.ui.main_window import MainWindow
 
 
 def main() -> int:
-    # Windows: 用 High-DPI 适配策略
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
     )
@@ -46,23 +49,26 @@ def main() -> int:
 
     setTheme(Theme.LIGHT)
 
-    # 全局状态目录
     user_state_dir().mkdir(parents=True, exist_ok=True)
 
-    # 项目选择器
-    launcher = LauncherDialog()
-    project = launcher.run()  # 阻塞,直到用户选定或取消
-    if project is None:
-        return 0
+    # 启动器 ↔ 主窗口 循环
+    while True:
+        launcher = LauncherDialog()
+        project = launcher.run()  # 阻塞,直到用户选定或取消
+        if project is None:
+            return 0
 
-    # 打开主窗口
-    window = MainWindow(project)
-    window.show()
+        window = MainWindow(project)
+        window.show()
+        del launcher
 
-    # 启动后释放 launcher 引用
-    del launcher
-
-    return app.exec()
+        rc = app.exec()
+        switching = bool(getattr(window, "_switching_project", False))
+        window.deleteLater()
+        if switching:
+            # MainWindow 用户点了"切换项目"→ 回到启动器
+            continue
+        return rc
 
 
 if __name__ == "__main__":

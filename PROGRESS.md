@@ -1,4 +1,4 @@
-# 🎯 YOLO Studio 项目进度
+# 🎯 DetectSphere 项目进度
 
 仓库**只包含工具代码**,不含任何用户数据(`projects/` 已在 `.gitignore`)。用户首次启动 GUI 时点"新建项目"创建自己的工作目录。
 
@@ -9,7 +9,7 @@
 yolo/
 ├── app.py                          # 入口
 ├── launch.py                       # 解释器自动发现
-├── 启动 YOLO Studio.bat            # Windows 一键启动
+├── 启动 DetectSphere.bat            # Windows 一键启动
 ├── yolo_studio/                    # 应用包(PySide6 + qfluentwidgets)
 │   ├── core/                       # 纯逻辑(无 Qt 依赖)
 │   │   ├── paths.py / project.py / project_manager.py

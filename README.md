@@ -1,4 +1,4 @@
-# 🎯 YOLO Studio
+# 🎯 DetectSphere
 
 基于 **YOLOv8 + PySide6 + qfluentwidgets** 的通用目标检测桌面工作台。
 
@@ -27,7 +27,7 @@
 yolo/
 ├── app.py                          # 入口
 ├── launch.py                       # 解释器自动发现(替换 .bat 硬编码路径)
-├── 启动 YOLO Studio.bat            # Windows 一键启动
+├── 启动 DetectSphere.bat            # Windows 一键启动
 ├── yolo_studio/                    # 应用包
 │   ├── core/                       # 纯逻辑(无 Qt 依赖)
 │   │   ├── paths.py / project.py / project_manager.py
@@ -70,7 +70,7 @@ pythonw launch.py
 python app.py
 
 # Windows 一键启动
-启动 YOLO Studio.bat
+启动 DetectSphere.bat
 ```
 
 ### 3. 创建第一个项目

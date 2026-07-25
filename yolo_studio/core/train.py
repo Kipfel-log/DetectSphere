@@ -49,7 +49,11 @@ class TrainConfig:
         return self.data_yaml or str(self.project.dataset_yaml)
 
     def effective_run_name(self) -> str:
-        return self.run_name or f"train_{int(time.time())}"
+        if self.run_name:
+            return self.run_name
+        # 默认:<项目名>_<时间戳>。例:pen_detection_1784782678
+        project_stem = self.project.root.name if self.project else "train"
+        return f"{project_stem}_{int(time.time())}"
 
     def effective_device(self) -> str:
         if self.device == "auto":

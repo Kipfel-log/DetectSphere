@@ -34,6 +34,51 @@ except Exception:
     _HAVE_PYNVML = False
 
 
+def _read_gpu_via_nvidia_smi() -> list[dict]:
+    """nvidia-smi 兜底(pynvml 在 Windows 上常因找不到 nvml.dll 失败)。
+
+    返回 [{index, name, util(%), mem_used(MiB), mem_total(MiB)}]
+    """
+    import shutil
+    import subprocess
+
+    if not shutil.which("nvidia-smi"):
+        return []
+    try:
+        r = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,name,utilization.gpu,memory.used,memory.total",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if r.returncode != 0:
+            return []
+        out: list[dict] = []
+        for line in r.stdout.strip().splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 5:
+                continue
+            try:
+                out.append(
+                    {
+                        "index": int(parts[0]),
+                        "name": parts[1],
+                        "util": int(parts[2]),
+                        "mem_used": int(parts[3]),
+                        "mem_total": int(parts[4]),
+                    }
+                )
+            except ValueError:
+                continue
+        return out
+    except Exception:
+        return []
+
+
 # 一些平台常量(Python 没直接接口给 CPU 频率)
 def _cpu_static_info() -> tuple[int, float]:
     try:
@@ -203,12 +248,13 @@ class SystemMonitor(QWidget):
 
     @property
     def gpu_count(self) -> int:
-        if not self._nvml_ok:
-            return 0
-        try:
-            return int(pynvml.nvmlDeviceGetCount())
-        except Exception:
-            return 0
+        if self._nvml_ok:
+            try:
+                return int(pynvml.nvmlDeviceGetCount())
+            except Exception:
+                pass
+        # 兜底:nvidia-smi
+        return len(_read_gpu_via_nvidia_smi())
 
     # ---- 公开 API ----
     def set_running(self, running: bool) -> None:
@@ -245,7 +291,36 @@ class SystemMonitor(QWidget):
         self._refresh_gpus()
 
     def _refresh_gpus(self) -> None:
-        n = self.gpu_count
+        # 数据源:优先 pynvml,失败则 nvidia-smi
+        gpu_data: list[dict] = []
+        if self._nvml_ok:
+            try:
+                for i in range(self.gpu_count):
+                    handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+                    name_raw = pynvml.nvmlDeviceGetName(handle)
+                    name = (
+                        name_raw.decode("utf-8", errors="ignore")
+                        if isinstance(name_raw, bytes)
+                        else str(name_raw)
+                    )
+                    util = int(pynvml.nvmlDeviceGetUtilizationRates(handle).gpu)
+                    mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                    gpu_data.append(
+                        {
+                            "index": i,
+                            "name": name,
+                            "util": util,
+                            "mem_used": int(mem.used / (1024 * 1024)),
+                            "mem_total": int(mem.total / (1024 * 1024)),
+                        }
+                    )
+            except Exception:
+                gpu_data = []
+        if not gpu_data:
+            # 兜底
+            gpu_data = _read_gpu_via_nvidia_smi()
+
+        n = len(gpu_data)
         if n != len(self._gpu_rows):
             while self._gpu_container.count():
                 item = self._gpu_container.takeAt(0)
@@ -259,33 +334,22 @@ class SystemMonitor(QWidget):
                 self._gpu_container.addWidget(row)
                 self._gpu_rows.append(row)
             if n == 0:
-                lbl = CaptionLabel("(未检测到 GPU 或 pynvml 不可用)")
+                lbl = CaptionLabel("(未检测到 GPU,或 nvidia-smi 也不在 PATH)")
                 self._gpu_container.addWidget(lbl)
                 self._gpu_rows.append(lbl)  # type: ignore[arg-type]
 
         if n == 0:
             return
 
-        for i, row in enumerate(self._gpu_rows):
+        for entry, row in zip(gpu_data, self._gpu_rows):
             if not isinstance(row, _GpuRow):
                 continue
-            util = vram_used = vram_total = None
-            name = f"GPU {i}"
-            try:
-                handle = pynvml.nvmlDeviceGetHandleByIndex(i)
-                name_raw = pynvml.nvmlDeviceGetName(handle)
-                if isinstance(name_raw, bytes):
-                    name = name_raw.decode("utf-8", errors="ignore")
-                else:
-                    name = str(name_raw)
-                util_obj = pynvml.nvmlDeviceGetUtilizationRates(handle)
-                util = int(util_obj.gpu)
-                mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
-                vram_used = int(mem.used / (1024 * 1024))
-                vram_total = int(mem.total / (1024 * 1024))
-            except Exception:
-                pass
-            row.update(name, util, vram_used, vram_total)
+            row.update(
+                entry.get("name", "GPU"),
+                entry.get("util"),
+                entry.get("mem_used"),
+                entry.get("mem_total"),
+            )
 
     def closeEvent(self, event) -> None:
         try:

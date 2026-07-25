@@ -1,4 +1,4 @@
-"""Project 数据类 — 表示一个 YOLO Studio 项目。"""
+"""Project 数据类 — 表示一个 DetectSphere 项目。"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field

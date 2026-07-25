@@ -16,7 +16,6 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
     QLabel,
-    QMessageBox,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -27,6 +26,7 @@ from qfluentwidgets import (
     FluentIcon as FIF,
     InfoBar,
     InfoBarPosition,
+    MessageDialog,
     PrimaryPushButton,
     PushButton,
     StrongBodyLabel,
@@ -35,7 +35,7 @@ from qfluentwidgets import (
 
 from yolo_studio.core.class_config import ClassDef, load_dataset_yaml, save_dataset_yaml
 from yolo_studio.core.db import ProjectDB
-from yolo_studio.core.dataset import split_dataset
+from yolo_studio.core.dataset import list_images, split_dataset
 from yolo_studio.core.io.manifest import rebuild_from_disk
 from yolo_studio.core.project import Project
 from yolo_studio.ui.widgets.class_editor import ClassEditor
@@ -45,6 +45,7 @@ class ProjectSettingsPage(QWidget):
     """项目设置页。"""
 
     classesChanged = Signal(list)  # 新类列表
+    datasetChanged = Signal()  # 数据集划分/结构变更(通知其他页面刷新)
 
     def __init__(self, project: Project, db: ProjectDB) -> None:
         super().__init__()
@@ -137,7 +138,7 @@ class ProjectSettingsPage(QWidget):
         try:
             save_dataset_yaml(self.project.dataset_yaml, classes)
         except Exception as e:
-            QMessageBox.critical(self, "写入失败", str(e))
+            MessageDialog("写入失败", str(e), self).exec()
             return
         self.project.set_classes(classes)
         InfoBar.success(
@@ -155,13 +156,26 @@ class ProjectSettingsPage(QWidget):
         val = self.val_spin.value() / 100
         test = self.test_spin.value() / 100
         if abs(train + val + test - 1.0) > 1e-6:
-            QMessageBox.warning(self, "比例错误", "训练/验证/测试比例之和必须等于 100%。")
+            MessageDialog("比例错误", "训练/验证/测试比例之和必须等于 100%。", self).exec()
             return
-        if QMessageBox.question(
-            self,
-            "重新划分",
-            f"将覆盖 train/val/test 目录。\n比例:{int(train*100)}% / {int(val*100)}% / {int(test*100)}%\n继续?",
-        ) != QMessageBox.StandardButton.Yes:
+
+        has_new = bool(list_images(self.project.images_dir))
+        has_existing = any(
+            list_images(getattr(self.project, f"{s}_images"))
+            for s in ("train", "val", "test")
+        )
+        if has_new and has_existing:
+            confirm_msg = (
+                f"检测到 data/images 中有新图,且 train/val/test 已有数据。\n"
+                f"将只对新图按 {int(train*100)}% / {int(val*100)}% / {int(test*100)}% "
+                f"划分并追加到 train/val/test,已有数据不会被覆盖或重新打乱。\n继续?"
+            )
+        else:
+            confirm_msg = (
+                f"将覆盖 train/val/test 目录。\n"
+                f"比例:{int(train*100)}% / {int(val*100)}% / {int(test*100)}%\n继续?"
+            )
+        if not MessageDialog("重新划分", confirm_msg, self).exec():
             return
         try:
             stats = split_dataset(
@@ -172,19 +186,30 @@ class ProjectSettingsPage(QWidget):
                 seed=self.seed_spin.value(),
             )
         except Exception as e:
-            QMessageBox.critical(self, "划分失败", str(e))
+            MessageDialog("划分失败", str(e), self).exec()
             return
 
         # 重新建 manifest
         rebuild_from_disk(self.project, self.db)
 
-        InfoBar.success(
-            title="划分完成",
-            content=(
+        if stats.mode == "incremental":
+            content = (
+                f"检测到已有 train/val/test,仅对 data/images 中的新图做了增量划分:\n"
+                f"新增训练 {stats.train} · 验证 {stats.val} · 测试 {stats.test}"
+                f"(共 {stats.total} 张,{stats.skipped} 张因同名冲突被跳过)"
+            )
+        else:
+            content = (
                 f"训练 {stats.train} · 验证 {stats.val} · 测试 {stats.test} · "
                 f"未划分 {stats.unlabeled} (共 {stats.total})"
-            ),
+            )
+        InfoBar.success(
+            title="划分完成",
+            content=content,
             parent=self,
             position=InfoBarPosition.TOP,
-            duration=4000,
+            duration=5000,
         )
+
+        # 通知其他页面刷新(AnnotatePage / DatasetPage 需要重新扫描图像列表)
+        self.datasetChanged.emit()

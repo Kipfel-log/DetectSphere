@@ -16,25 +16,29 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
-    QMessageBox,
     QPushButton,
     QTableView,
     QVBoxLayout,
     QWidget,
 )
-from qfluentwidgets import FluentIcon as FIF, PushButton
+from qfluentwidgets import ColorDialog, FluentIcon as FIF, MessageDialog, PushButton
 
-from yolo_studio.core.class_config import ClassDef
+from yolo_studio.core.class_config import ClassDef, DEFAULT_CLASS_PALETTE, default_color_for
 
 
 class _ClassModel(QAbstractTableModel):
-    """类列表的表格模型。"""
+    """类列表的表格模型。
 
-    HEADERS = ["ID", "Name"]
+    列:ID | Name | Color
+    - Color 列用 DecorationRole 画色块;DisplayRole 显示 hex 文本
+    - Color 列不直接编辑,双击单元格由 ClassEditor 弹 ColorDialog 选色
+    """
+
+    HEADERS = ["ID", "Name", "Color"]
 
     def __init__(self, classes: list[ClassDef], parent=None) -> None:
         super().__init__(parent)
-        self._classes = list(classes)
+        self._classes = [ClassDef(class_id=c.class_id, name=c.name, color=c.color) for c in classes]
 
     def rowCount(self, parent=QModelIndex()) -> int:
         return 0 if parent.isValid() else len(self._classes)
@@ -53,11 +57,20 @@ class _ClassModel(QAbstractTableModel):
         if not index.isValid() or index.row() >= len(self._classes):
             return None
         c = self._classes[index.row()]
-        if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole):
-            if index.column() == 0:
+        if index.column() == 0:
+            if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole):
                 return c.class_id
-            if index.column() == 1:
+        elif index.column() == 1:
+            if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole):
                 return c.name
+        elif index.column() == 2:
+            # 颜色列:DecorationRole → QColor 自动画色块;DisplayRole → hex 文本
+            if role == Qt.ItemDataRole.DecorationRole and c.color:
+                return QColor(c.color)
+            if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.ToolTipRole):
+                return c.color if c.color else "(未设)"
+            if role == Qt.ItemDataRole.TextAlignmentRole:
+                return int(Qt.AlignmentFlag.AlignCenter)
         return None
 
     def setData(self, index: QModelIndex, value, role: int = Qt.ItemDataRole.EditRole) -> bool:
@@ -69,14 +82,27 @@ class _ClassModel(QAbstractTableModel):
             new_name = str(value).strip()
             if not new_name:
                 return False
-            # 检查重名
             for i, c in enumerate(self._classes):
                 if i != index.row() and c.name == new_name:
                     return False
-            self._classes[index.row()] = ClassDef(class_id=self._classes[index.row()].class_id, name=new_name)
+            old = self._classes[index.row()]
+            self._classes[index.row()] = ClassDef(class_id=old.class_id, name=new_name, color=old.color)
             self.dataChanged.emit(index, index, [role])
             return True
         return False
+
+    def set_color(self, row: int, hex_color: str) -> bool:
+        """由 ColorDialog 触发 — 直接改 color 字段并 emit。"""
+        if not (0 <= row < len(self._classes)):
+            return False
+        old = self._classes[row]
+        if old.color == hex_color:
+            return False
+        self._classes[row] = ClassDef(class_id=old.class_id, name=old.name, color=hex_color)
+        idx_left = self.index(row, 0)
+        idx_right = self.index(row, 2)
+        self.dataChanged.emit(idx_left, idx_right, [])
+        return True
 
     def flags(self, index: QModelIndex) -> Qt.ItemFlags:
         if not index.isValid():
@@ -84,6 +110,7 @@ class _ClassModel(QAbstractTableModel):
         base = Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
         if index.column() == 1:
             base |= Qt.ItemFlag.ItemIsEditable
+        # 颜色列不直接编辑 — 双击走 ColorDialog
         return base
 
     # ---- 列表操作 ----
@@ -97,7 +124,10 @@ class _ClassModel(QAbstractTableModel):
         while name in existing:
             suffix += 1
             name = f"{base}_{suffix}"
-        self._classes.append(ClassDef(class_id=new_id, name=name))
+        # 自动从调色板分一个未用的颜色
+        used_colors = {c.color for c in self._classes if c.color}
+        new_color = default_color_for(new_id, used_colors)
+        self._classes.append(ClassDef(class_id=new_id, name=name, color=new_color))
         row = len(self._classes) - 1
         self.beginInsertRows(QModelIndex(), row, row)
         self.endInsertRows()
@@ -115,17 +145,17 @@ class _ClassModel(QAbstractTableModel):
         new_row = row + delta
         if not (0 <= row < len(self._classes)) or not (0 <= new_row < len(self._classes)):
             return False
-        # ID 跟着交换
+        # ID 跟着交换(颜色跟随原 class 走,不互换)
         a = self._classes[row]
         b = self._classes[new_row]
         a_id, b_id = a.class_id, b.class_id
-        a = ClassDef(class_id=b_id, name=a.name)
-        b = ClassDef(class_id=a_id, name=b.name)
-        self._classes[row] = a
-        self._classes[new_row] = b
+        a2 = ClassDef(class_id=b_id, name=a.name, color=a.color)
+        b2 = ClassDef(class_id=a_id, name=b.name, color=b.color)
+        self._classes[row] = a2
+        self._classes[new_row] = b2
         top = self.index(min(row, new_row), 0)
-        bot = self.index(max(row, new_row), 1)
-        self.dataChanged.emit(top, bot)
+        bot = self.index(max(row, new_row), 2)
+        self.dataChanged.emit(top, bot, [])
         return True
 
     def classes(self) -> list[ClassDef]:
@@ -179,9 +209,21 @@ class ClassEditor(QWidget):
         self.table = QTableView()
         self.table.setModel(self._model)
         self.table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setStretchLastSection(False)
+        # ID 列(Name 拉伸)
+        self.table.setColumnWidth(0, 50)
+        # 颜色列固定宽度,让 Name 列拉伸
+        self.table.setColumnWidth(2, 120)
+        # Name 列拉伸
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
+        # 双击颜色列 → 打开 ColorDialog
+        self.table.doubleClicked.connect(self._on_table_double_clicked)
         layout.addWidget(self.table, 1)
 
     # ---- 公开 API ----
@@ -209,12 +251,12 @@ class ClassEditor(QWidget):
         if not idx.isValid():
             return
         row = idx.row()
-        if QMessageBox.question(
-            self,
+        if not MessageDialog(
             "删除类",
             f"确认删除类 '{self._model.classes()[row].name}'?\n"
             f"(这不会自动迁移已有 .txt 文件中的 class_id)",
-        ) != QMessageBox.StandardButton.Yes:
+            self,
+        ).exec():
             return
         self._model.remove_class(row)
         self._mark_changed()
@@ -228,7 +270,7 @@ class ClassEditor(QWidget):
             self._mark_changed()
 
     def _on_reset(self) -> None:
-        if QMessageBox.question(self, "重置", "放弃所有未应用的修改?") != QMessageBox.StandardButton.Yes:
+        if not MessageDialog("重置", "放弃所有未应用的修改?", self).exec():
             return
         # 由调用方通过 set_classes 重新载入
         self.classesChanged.emit(self._model.classes())
@@ -237,18 +279,30 @@ class ClassEditor(QWidget):
     def _on_apply(self) -> None:
         classes = self._model.classes()
         if not classes:
-            QMessageBox.warning(self, "应用", "类列表不能为空。")
+            MessageDialog("应用", "类列表不能为空。", self).exec()
             return
-        if QMessageBox.question(
-            self,
+        if not MessageDialog(
             "应用类修改",
             "将以下类定义写入 dataset.yaml?\n\n"
             + "\n".join(f"  {c.class_id}: {c.name}" for c in classes)
             + "\n\n注意:类 ID/顺序的改变会导致已有 .txt 文件中的 class_id 错位。",
-        ) != QMessageBox.StandardButton.Yes:
+            self,
+        ).exec():
             return
         self.classesChanged.emit(classes)
         self._has_changes = False
 
     def _mark_changed(self) -> None:
         self._has_changes = True
+
+    def _on_table_double_clicked(self, index: QModelIndex) -> None:
+        """双击颜色列 → 打开 ColorDialog 选色。"""
+        if not index.isValid() or index.column() != 2:
+            return
+        row = index.row()
+        cur_color = self._model._classes[row].color or "#888888"
+        dlg = ColorDialog(QColor(cur_color), f"选择类 {row} 的颜色", self)
+        if dlg.exec():
+            new_hex = dlg.color.name().lower()  # "#rrggbb"
+            self._model.set_color(row, new_hex)
+            self._mark_changed()

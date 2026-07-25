@@ -60,14 +60,19 @@ class Mode(enum.Enum):
 class BoxItem(QGraphicsRectItem):
     """单个标注框。可移动、选中。"""
 
-    def __init__(self, box: Box, image_w: int, image_h: int) -> None:
+    def __init__(self, box: Box, image_w: int, image_h: int, *, color_override: str | None = None) -> None:
         x1, y1, x2, y2 = box.to_xyxy_norm()
         rect = QRectF(x1 * image_w, y1 * image_h, (x2 - x1) * image_w, (y2 - y1) * image_h)
         super().__init__(rect)
         self._box = box
         self._image_w = image_w
         self._image_h = image_h
-        self._color = color_for_class(box.class_id)
+        # 颜色优先级:color_override(项目类色) > 默认调色板(按 class_id 循环)
+        # Box 本身不携带 color — 颜色完全由项目级 class_color_map 提供
+        if color_override is not None:
+            self._color = QColor(color_override)
+        else:
+            self._color = color_for_class(box.class_id)
 
         pen = QPen(self._color, 2)
         pen.setCosmetic(True)  # 不随缩放变化线宽
@@ -153,6 +158,8 @@ class AnnotationCanvas(QGraphicsView):
         self._suppress_save = False  # 加载/初始化时为 True,避免触发 _on_boxes_changed 自动写盘
         self._pending_fit = False  # viewport 未就绪时延迟 fit
         self._exif_rotation = 0  # 0/1/2/3 见 image_utils 模块顶部
+        self._class_color_map: dict[int, str] = {}  # 外部传入的 class_id → hex
+        self._space_held = False  # Space 键按下中(临时平移模式)
 
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
@@ -163,13 +170,15 @@ class AnnotationCanvas(QGraphicsView):
     def set_mode(self, mode: Mode | str) -> None:
         if isinstance(mode, str):
             mode = Mode(mode)
-        if mode == Mode.DRAW:
-            self.setDragMode(QGraphicsView.DragMode.NoDrag)
-            self.viewport().setCursor(Qt.CursorShape.CrossCursor)
-        else:
-            self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
-            self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
         self._mode = mode
+        # 切换模式时让 _apply_drag_mode 决定 DragMode(会尊重 Space 状态)
+        if mode == Mode.DRAW:
+            if not self._space_held:
+                self.viewport().setCursor(Qt.CursorShape.CrossCursor)
+        else:
+            if not self._space_held:
+                self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
+        self._apply_drag_mode()
         self.modeChanged.emit(mode.value)
 
     def set_current_class_id(self, class_id: int) -> None:
@@ -271,13 +280,40 @@ class AnnotationCanvas(QGraphicsView):
         return [item.normalized_box() for item in self._box_items]
 
     def _add_box_item(self, box: Box) -> BoxItem:
-        item = BoxItem(box, self._image_w, self._image_h)
+        # 颜色完全由项目级 class_color_map 提供(无则用默认调色板)
+        color_override = self._class_color_map.get(box.class_id)
+        item = BoxItem(
+            box, self._image_w, self._image_h,
+            color_override=color_override,
+        )
         self._scene.addItem(item)
         self._box_items.append(item)
         return item
 
+    # ---- 类颜色映射(由 AnnotatePage.refresh_classes 推过来)----
+    def set_class_color_map(self, mapping: dict[int, str] | None) -> None:
+        self._class_color_map = dict(mapping) if mapping else {}
+
     # ---- 鼠标事件 ----
     def mousePressEvent(self, event) -> None:
+        # 中键拖动 → 平移(临时切到 ScrollHandDrag,触发 QGraphicsView 的 panning)
+        if event.button() == Qt.MouseButton.MiddleButton:
+            self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+            # 合成一个左键按下让 QGraphicsView 内部 pan 逻辑接管
+            from PySide6.QtGui import QMouseEvent
+            from PySide6.QtCore import QEvent
+
+            fake = QMouseEvent(
+                QEvent.Type.MouseButtonPress,
+                event.position(),
+                Qt.MouseButton.LeftButton,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+            super().mousePressEvent(fake)
+            event.accept()
+            return
+
         if self._mode == Mode.DRAW and self._image_item is not None and event.button() == Qt.MouseButton.LeftButton:
             scene_pos = self.mapToScene(event.position().toPoint())
             # 限制在图像内
@@ -306,6 +342,23 @@ class AnnotationCanvas(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
+        # 中键释放 → 恢复原拖动模式
+        if event.button() == Qt.MouseButton.MiddleButton:
+            self._apply_drag_mode()
+            from PySide6.QtGui import QMouseEvent
+            from PySide6.QtCore import QEvent
+
+            fake = QMouseEvent(
+                QEvent.Type.MouseButtonRelease,
+                event.position(),
+                Qt.MouseButton.LeftButton,
+                Qt.MouseButton.LeftButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+            super().mouseReleaseEvent(fake)
+            event.accept()
+            return
+
         if (
             self._mode == Mode.DRAW
             and self._draw_rect_item is not None
@@ -333,6 +386,18 @@ class AnnotationCanvas(QGraphicsView):
             return
         super().mouseReleaseEvent(event)
 
+    # ---- 拖动模式助手 ----
+    def _apply_drag_mode(self) -> None:
+        """根据当前 _mode + _space_held 决定 QGraphicsView 的 DragMode。"""
+        if self._space_held:
+            # Space 按下中,优先级最高
+            self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+            return
+        if self._mode == Mode.DRAW:
+            self.setDragMode(QGraphicsView.DragMode.NoDrag)
+        else:
+            self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
+
     # ---- 键盘 ----
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Delete or event.key() == Qt.Key.Key_Backspace:
@@ -348,7 +413,26 @@ class AnnotationCanvas(QGraphicsView):
                     self._draw_start = None
             event.accept()
             return
+        # Space:进入临时平移模式
+        if event.key() == Qt.Key.Key_Space and not event.isAutoRepeat():
+            self._space_held = True
+            self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+            self.viewport().setCursor(Qt.CursorShape.OpenHandCursor)
+            event.accept()
+            return
         super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event: QKeyEvent) -> None:
+        if event.key() == Qt.Key.Key_Space and not event.isAutoRepeat():
+            self._space_held = False
+            self._apply_drag_mode()
+            if self._mode == Mode.DRAW:
+                self.viewport().setCursor(Qt.CursorShape.CrossCursor)
+            else:
+                self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
+            event.accept()
+            return
+        super().keyReleaseEvent(event)
 
     def _delete_selected(self) -> None:
         to_remove = [it for it in self._box_items if it.isSelected()]

@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, QUrl, Slot
+from PySide6.QtCore import Qt, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -35,7 +35,7 @@ from qfluentwidgets import (
     FluentIcon as FIF,
     InfoBar,
     InfoBarPosition,
-    MessageBox,
+    MessageDialog,
     PushButton,
     PrimaryPushButton,
     StrongBodyLabel,
@@ -60,6 +60,8 @@ from yolo_studio.ui.widgets.log_pane import LogPane
 
 class ModelRegistryPage(QWidget):
     """模型注册表页。"""
+
+    modelsChanged = Signal()  # 模型列表变更(导入/删除/设为活动)
 
     def __init__(self, project: Project, db: ProjectDB) -> None:
         super().__init__()
@@ -234,6 +236,7 @@ class ModelRegistryPage(QWidget):
         )
         self.log_pane.append(f"[{time.strftime('%H:%M:%S')}] SetActive: {name}")
         self.refresh()
+        self.modelsChanged.emit()
 
     def _on_export_onnx(self) -> None:
         name = self._selected_name()
@@ -299,6 +302,7 @@ class ModelRegistryPage(QWidget):
                 duration=2000,
             )
             self.refresh()
+            self.modelsChanged.emit()
         except Exception as e:
             self.log_pane.append(f"[ERROR] import failed: {e}")
             InfoBar.error(
@@ -312,10 +316,11 @@ class ModelRegistryPage(QWidget):
         name = self._selected_name()
         if not name:
             return
-        if MessageBox(
+        if not MessageDialog(
             "删除模型",
             f"确认从 models/ 删除 {name}?",
-        ).exec() != MessageBox.DialogCode.Accepted.value:
+            self,
+        ).exec():
             return
         reg = load_registry(self.project)
         entry = next((m for m in reg.models if m.name == name), None)
@@ -345,6 +350,7 @@ class ModelRegistryPage(QWidget):
             duration=2000,
         )
         self.refresh()
+        self.modelsChanged.emit()
 
     def _on_open_dir(self) -> None:
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.project.models_dir)))

@@ -28,7 +28,6 @@ from qfluentwidgets import (
     FluentIcon as FIF,
     InfoBar,
     InfoBarPosition,
-    MessageBox,
     PushButton,
     StrongBodyLabel,
     TitleLabel,
@@ -47,6 +46,7 @@ class DatasetPage(QWidget):
     """数据集浏览页。"""
 
     imageActivated = Signal(str)  # 路径
+    imagesChanged = Signal()  # 图像列表变化(导入/删除/划分)→ 通知 AnnotatePage 刷新
 
     def __init__(self, project: Project, db: ProjectDB) -> None:
         super().__init__()
@@ -174,6 +174,9 @@ class DatasetPage(QWidget):
             position=InfoBarPosition.TOP,
             duration=2000,
         )
+
+        # 通知其他页面(AnnotatePage)列表变了
+        self.imagesChanged.emit()
 
     def refresh_classes(self, classes: list[ClassDef]) -> None:
         """类被外部修改后调用,刷新右侧类列表 + 概览。"""

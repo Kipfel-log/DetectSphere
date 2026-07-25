@@ -2,7 +2,7 @@
 
 左侧:图像列表(分 split 标签)
 中间:AnnotationCanvas
-右侧:当前类(ClassPicker) + 工具按钮 + 当前 boxes 列表
+右侧:当前类(RadioButton 互斥组) + 工具按钮 + 当前 boxes 列表
 
 行为:
   - 打开图像 → 加载已有 boxes(从 .txt 或 DB)
@@ -16,15 +16,15 @@ from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtGui import QKeySequence, QShortcut, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QFileDialog,
     QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
     QSplitter,
-    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -35,8 +35,10 @@ from qfluentwidgets import (
     InfoBar,
     InfoBarPosition,
     PushButton,
+    RadioButton,
     StrongBodyLabel,
     TitleLabel,
+    TreeView,
 )
 
 from yolo_studio.core.class_config import ClassDef, load_dataset_yaml
@@ -50,7 +52,6 @@ from yolo_studio.core.io.labels import Box, read_yolo_txt
 from yolo_studio.core.io.manifest import _is_image
 from yolo_studio.core.project import Project
 from yolo_studio.ui.widgets.annotation_canvas import AnnotationCanvas, Mode
-from yolo_studio.ui.widgets.class_picker import ClassPicker
 
 
 class AnnotatePage(QWidget):
@@ -68,66 +69,85 @@ class AnnotatePage(QWidget):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         layout.addWidget(splitter)
 
-        # ---- 左:图像列表 ----
+        # ---- 左:图像列表(单一 TreeView,按 split 分组) ----
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.addWidget(StrongBodyLabel("图像"))
 
-        self.split_tabs = QTabWidget()
-        self.split_tabs.currentChanged.connect(self._on_split_changed)
-        left_layout.addWidget(self.split_tabs, 1)
+        # TreeView 模型(顶层节点 = split,子节点 = 图像文件名)
+        self.tree_model = QStandardItemModel()
+        self.tree_model.setHorizontalHeaderLabels(["图像"])
+        self.tree = TreeView()
+        self.tree.setModel(self.tree_model)
+        self.tree.setHeaderHidden(True)
+        self.tree.setUniformRowHeights(True)
+        # 单击即打开(clicked 信号 = QAbstractItemView 标准)
+        self.tree.clicked.connect(self._on_image_clicked)
+        left_layout.addWidget(self.tree, 1)
 
-        self._image_lists: dict[str, QListWidget] = {}
-        # 分裂点标签 — 顺序、内容、tooltip、图标
+        # split 元数据(标签 / 图标 / tooltip)
         self._splits_order = ["train", "val", "test", "unassigned"]
-        split_meta = {
+        self._split_meta = {
             "train": ("训练 train", FIF.EDIT, "训练集 — 用来训练模型的图像"),
             "val": ("验证 val", FIF.SEARCH, "验证集 — 训练中用来评估模型的图像"),
             "test": ("测试 test", FIF.SEND, "测试集 — 训练完后评估泛化能力的图像"),
             "unassigned": ("未划分", FIF.FOLDER, "未划分 — 还没划进任何 split 的新图像(标注后用「项目设置 → 重新划分」分到 train/val/test)"),
         }
-        for split in self._splits_order:
-            list_widget = QListWidget()
-            list_widget.itemDoubleClicked.connect(self._on_image_chosen)
-            self._image_lists[split] = list_widget
-            label, icon, tooltip = split_meta[split]
-            idx = self.split_tabs.addTab(list_widget, label)
-            self.split_tabs.setTabIcon(idx, icon.icon())
-            self.split_tabs.setTabToolTip(idx, tooltip)
+        self._top_items: dict[str, QStandardItem] = {}  # split → top-level item
+        self._build_tree_top_level()
         self._populate_image_lists()
 
         splitter.addWidget(left)
 
-        # ---- 中:画布 + 工具条 ----
+        # ---- 中:画布 + 工具条(用 Fluent CommandBar) ----
         center = QWidget()
         center_layout = QVBoxLayout(center)
         center_layout.setContentsMargins(8, 0, 8, 0)
 
-        # 工具条
-        toolbar = QHBoxLayout()
+        from PySide6.QtGui import QAction
+        from qfluentwidgets import CommandBar
+
         self.nav_label = BodyLabel("未选中图像")
-        toolbar.addWidget(self.nav_label)
-        toolbar.addStretch(1)
+        self.draw_action = QAction(FIF.ADD.icon(), "新建框 (N)")
+        self.draw_action.setCheckable(True)
+        self.draw_action.setToolTip("新建框模式 (快捷键 N)")
+        self.draw_action.triggered.connect(self._on_toggle_draw)
+        self.delete_action = QAction(FIF.DELETE.icon(), "删除 (Del)")
+        self.delete_action.setToolTip("删除选中框 (快捷键 Del)")
+        self.delete_action.triggered.connect(self._on_delete_selected)
+        self.fit_action = QAction(FIF.FIT_PAGE.icon(), "适应窗口")
+        self.fit_action.triggered.connect(self._on_fit)
+        self.save_action = QAction(FIF.SAVE.icon(), "保存 (Ctrl+S)")
+        self.save_action.setToolTip("保存 (Ctrl+S)")
+        self.save_action.triggered.connect(self._save_current)
+        self.save_next_action = QAction(FIF.SAVE.icon(), "保存并下一张 (Ctrl+Enter)")
+        self.save_next_action.setToolTip("保存当前并跳到下一张 (Ctrl+Enter)")
+        self.save_next_action.triggered.connect(self._on_save_next)
+        self.tips_action = QAction(FIF.QUESTION.icon(), "快捷键")
+        self.tips_action.setToolTip("查看快捷键")
+        self.tips_action.triggered.connect(self._show_tips)
 
-        self.draw_btn = PushButton(FIF.ADD, "新建框(Draw)")
-        self.draw_btn.setCheckable(True)
-        self.draw_btn.clicked.connect(self._on_toggle_draw)
-        toolbar.addWidget(self.draw_btn)
+        self.command_bar = CommandBar()
+        self.command_bar.addAction(self.draw_action)
+        self.command_bar.addSeparator()
+        self.command_bar.addAction(self.delete_action)
+        self.command_bar.addAction(self.fit_action)
+        self.command_bar.addAction(self.save_action)
+        self.command_bar.addAction(self.save_next_action)
+        self.command_bar.addSeparator()
+        self.command_bar.addAction(self.tips_action)
+        # 兼容旧代码里对 self.draw_btn 的引用
+        self.draw_btn = self.draw_action
 
-        self.delete_btn = PushButton(FIF.DELETE, "删除选中(Del)")
-        self.delete_btn.clicked.connect(self._on_delete_selected)
-        toolbar.addWidget(self.delete_btn)
+        # nav_label 放成独立行 — CommandBar.addWidget 在某些样式下 widget 会被挤压/隐藏
+        nav_row = QHBoxLayout()
+        nav_row.setContentsMargins(0, 0, 0, 0)
+        nav_row.addWidget(self.nav_label)
+        nav_row.addStretch(1)
 
-        self.fit_btn = PushButton(FIF.FIT_PAGE, "适应窗口")
-        self.fit_btn.clicked.connect(self._on_fit)
-        toolbar.addWidget(self.fit_btn)
-
-        self.save_btn = PushButton(FIF.SAVE, "保存(Ctrl+S)")
-        self.save_btn.clicked.connect(self._save_current)
-        toolbar.addWidget(self.save_btn)
-
-        center_layout.addLayout(toolbar)
+        center_layout.addLayout(nav_row)
+        center_layout.addWidget(self.command_bar)
 
         # 画布
         self.canvas = AnnotationCanvas()
@@ -142,11 +162,14 @@ class AnnotatePage(QWidget):
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(8, 0, 0, 0)
 
+        # 当前类:互斥 RadioButton 组(取代原来的 ComboBox)
         right_layout.addWidget(StrongBodyLabel("当前类(新建框用)"))
-        self.class_picker = ClassPicker()
-        self.class_picker.set_classes(project.classes)
-        self.class_picker.classChanged.connect(self._on_class_picker_changed)
-        right_layout.addWidget(self.class_picker)
+        self._class_button_group = QButtonGroup(self)
+        self._class_button_group.setExclusive(True)
+        self._class_radios: list[RadioButton] = []  # 与 class_id 同步索引
+        self._class_ids: list[int] = []  # _class_radios[i] 对应的 class_id
+        self._class_radio_layout = QVBoxLayout()
+        right_layout.addLayout(self._class_radio_layout)
 
         right_layout.addSpacing(8)
         right_layout.addWidget(StrongBodyLabel("提示"))
@@ -173,6 +196,8 @@ class AnnotatePage(QWidget):
 
         # 快捷键
         QShortcut(QKeySequence("Ctrl+S"), self, activated=self._save_current)
+        QShortcut(QKeySequence("Ctrl+Return"), self, activated=self._on_save_next)  # 保存并下一张
+        QShortcut(QKeySequence("N"), self, activated=self._on_toggle_draw)  # 切换 Draw 模式
         QShortcut(QKeySequence("["), self, activated=self._goto_prev)
         QShortcut(QKeySequence("]"), self, activated=self._goto_next)
         QShortcut(QKeySequence("D"), self, activated=self._on_delete_selected)
@@ -185,44 +210,129 @@ class AnnotatePage(QWidget):
 
     def refresh_classes(self, classes: list[ClassDef]) -> None:
         self.project.set_classes(classes)
-        self.class_picker.set_classes(classes)
+        self._refresh_class_radios(classes)
+        # 把每个类的持久化颜色推给画布(空颜色让画布走默认调色板)
+        self.canvas.set_class_color_map(
+            {c.class_id: c.color for c in classes if c.color}
+        )
+
+    def _refresh_class_radios(self, classes: list[ClassDef]) -> None:
+        """重建 RadioButton 列表(类被外部修改时调用)。"""
+        # 删旧 radio
+        for rb in self._class_radios:
+            self._class_button_group.removeButton(rb)
+            rb.setParent(None)
+            rb.deleteLater()
+        self._class_radios.clear()
+        self._class_ids.clear()
+        # 清空 layout 里所有旧 widget
+        while self._class_radio_layout.count():
+            item = self._class_radio_layout.takeAt(0)
+            w = item.widget()
+            if w:
+                w.setParent(None)
+                w.deleteLater()
+        # 加新的
+        from yolo_studio.core.class_config import DEFAULT_CLASS_PALETTE
+        for c in classes:
+            rb = RadioButton(f"{c.class_id}: {c.name}")
+            if c.color:
+                rb.setStyleSheet(
+                    f"color: {c.color}; font-weight: 600;"
+                )
+            self._class_button_group.addButton(rb, c.class_id)
+            rb.toggled.connect(self._on_class_radio_toggled)
+            self._class_radios.append(rb)
+            self._class_ids.append(c.class_id)
+            self._class_radio_layout.addWidget(rb)
+        # 默认选第一个
+        if classes:
+            self.set_current_class_id(classes[0].class_id)
+
+    def _on_class_radio_toggled(self, checked: bool) -> None:
+        if not checked:
+            return
+        cid = self._class_button_group.checkedId()
+        if cid < 0:
+            return
+        self.canvas.set_current_class_id(cid)
+        # 切换类:同步更新所有选中框的类
+        self.canvas.cycle_selected_class()
+
+    def set_current_class_id(self, class_id: int) -> None:
+        """程序化选中某个 radio(打开图像时把第一个 box 的类同步过去)。"""
+        for rb in self._class_radios:
+            if self._class_button_group.id(rb) == class_id:
+                rb.setChecked(True)
+                return
 
     def open_image(self, path: str) -> None:
         """从外部(DatasetPage 双击)打开一张图。"""
         p = Path(path)
         if not p.exists():
             return
-        # 同步 split tab
-        split = get_split_for_image(self.project, p)
-        idx = list(self._image_lists.keys()).index(split) if split in self._image_lists else 0
-        self.split_tabs.setCurrentIndex(idx)
-        # 选中该图
-        list_widget = self._image_lists[split]
-        for i in range(list_widget.count()):
-            if Path(list_widget.item(i).data(Qt.ItemDataRole.UserRole)) == p:
-                list_widget.setCurrentRow(i)
-                break
+        # 在 TreeView 中定位并选中(展开父节点 + 滚动到该子项)
+        self._select_in_tree(p)
         self._open_image(p)
 
     # ---- 内部 ----
+    def _build_tree_top_level(self) -> None:
+        """创建 4 个 split 顶层节点(图标 + tooltip + 不可编辑)。"""
+        for split in self._splits_order:
+            label, icon, tooltip = self._split_meta[split]
+            top = QStandardItem(label)
+            top.setIcon(icon.icon())
+            top.setToolTip(tooltip)
+            top.setData(split, Qt.ItemDataRole.UserRole)
+            top.setFlags(top.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self.tree_model.appendRow(top)
+            self._top_items[split] = top
+
     def _populate_image_lists(self) -> None:
-        """扫描所有 split(按 sha256 去重),填充各 split 的列表。"""
+        """扫描所有 split(按 sha256 去重),填充各 split 的子节点。"""
         buckets = list_all_images_by_split(self.project)
-        for split, list_widget in self._image_lists.items():
-            list_widget.clear()
+        for split, top in self._top_items.items():
+            top.removeRows(0, top.rowCount())
             for path, name, has_boxes in buckets.get(split, []):
                 mark = "●" if has_boxes else "○"
-                item = QListWidgetItem(f"{mark} {name}")
-                item.setData(Qt.ItemDataRole.UserRole, str(path))
-                list_widget.addItem(item)
+                child = QStandardItem(f"{mark} {name}")
+                child.setData(str(path), Qt.ItemDataRole.UserRole)
+                child.setToolTip(str(path))
+                child.setFlags(child.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                top.appendRow(child)
+        self.tree.expandAll()
 
-    def _on_split_changed(self, idx: int) -> None:
-        # 不自动打开,只更新列表
-        pass
+    def _select_in_tree(self, path: Path) -> None:
+        """在 TreeView 中定位 path 对应的子项,展开父节点 + 高亮。"""
+        target = str(path.resolve())
+        for split, top in self._top_items.items():
+            for r in range(top.rowCount()):
+                child = top.child(r)
+                if child.data(Qt.ItemDataRole.UserRole) == target:
+                    idx = self.tree_model.indexFromItem(child)
+                    self.tree.scrollTo(idx)
+                    self.tree.setCurrentIndex(idx)
+                    return
 
-    def _on_image_chosen(self, item: QListWidgetItem) -> None:
+    def _on_image_clicked(self, index) -> None:
+        """TreeView 单击回调(只处理子节点;顶层节点不打开图)。"""
+        if not index.isValid():
+            return
+        item = self.tree_model.itemFromIndex(index)
+        if item is None or item.parent() is None:
+            return  # 顶层 split 节点
         path = item.data(Qt.ItemDataRole.UserRole)
-        self._open_image(Path(path))
+        if path:
+            self._open_image(Path(path))
+
+    def _on_image_chosen(self, item) -> None:
+        """兼容旧调用(传 item 进来)。"""
+        if isinstance(item, QStandardItem):
+            if item.parent() is None:
+                return
+            path = item.data(Qt.ItemDataRole.UserRole)
+            if path:
+                self._open_image(Path(path))
 
     def _open_image(self, path: Path) -> None:
         # 若有未保存的 boxes 已经在 on_boxes_changed 自动处理
@@ -249,7 +359,7 @@ class AnnotatePage(QWidget):
         self._refresh_box_list(boxes)
         # 同步类选择到第一个 box 的类(若有)
         if boxes:
-            self.class_picker.set_current_class_id(boxes[0].class_id)
+            self.set_current_class_id(boxes[0].class_id)
             self.canvas.set_current_class_id(boxes[0].class_id)
         # 顶部状态
         self.nav_label.setText(f"当前:{path.name}  ({len(boxes)} 框)")
@@ -288,11 +398,6 @@ class AnnotatePage(QWidget):
         self._refresh_box_list(boxes)
         self.nav_label.setText(f"当前:{self._current_image.name}  ({len(boxes)} 框)")
 
-    def _on_class_picker_changed(self, class_id: int) -> None:
-        self.canvas.set_current_class_id(class_id)
-        # 切换类:同步更新所有选中框的类
-        self.canvas.cycle_selected_class()
-
     def _on_canvas_mode_changed(self, mode: str) -> None:
         if mode == Mode.DRAW.value:
             self.draw_btn.setChecked(True)
@@ -304,6 +409,33 @@ class AnnotatePage(QWidget):
             self.canvas.set_mode(Mode.DRAW)
         else:
             self.canvas.set_mode(Mode.SELECT)
+
+    def _on_save_next(self) -> None:
+        """Ctrl+Enter:保存当前 + 跳到下一张。"""
+        self._save_current()
+        self._goto_next()
+
+    def _show_tips(self) -> None:
+        """CommandBar 上的「快捷键」按钮 → 弹 TeachingTip。"""
+        from qfluentwidgets import TeachingTip, TeachingTipView
+
+        view = TeachingTipView(
+            title="快捷键",
+            content=(
+                "• 单击左侧图像:打开标注\n"
+                "• [/]:上一/下一张\n"
+                "• N:切换新建框模式\n"
+                "• Del / Backspace:删除选中框\n"
+                "• C:把选中框的类改成当前类\n"
+                "• 鼠标滚轮:缩放\n"
+                "• 中键拖动 / Space+拖动:平移\n"
+                "• Ctrl+S:保存\n"
+                "• Ctrl+Enter:保存并下一张"
+            ),
+            icon=FIF.QUESTION,
+        )
+        # 锚到触发它的 action 按钮
+        TeachingTip(view, self.tips_action).show()
 
     def _on_delete_selected(self) -> None:
         # 通过模拟 Del 键(AnnotationCanvas 监听 Delete/Backspace)
@@ -347,17 +479,24 @@ class AnnotatePage(QWidget):
         self._navigate(1)
 
     def _navigate(self, delta: int) -> None:
-        idx = self.split_tabs.currentIndex()
-        if idx < 0 or idx >= len(self._splits_order):
+        """在当前选中的 split 组内上下移动,跨 split 时不切换。"""
+        cur = self.tree.currentIndex()
+        if not cur.isValid():
+            # 没选中 → 选第一个 split 的第一项
+            first = self._top_items.get(self._splits_order[0])
+            if first and first.rowCount() > 0:
+                child_idx = first.child(0).index()
+                self.tree.setCurrentIndex(child_idx)
+                self._on_image_chosen(first.child(0))
             return
-        split = self._splits_order[idx]
-        list_widget = self._image_lists[split]
-        row = list_widget.currentRow()
-        if row < 0:
-            row = 0
-        else:
-            row = max(0, min(list_widget.count() - 1, row + delta))
-        list_widget.setCurrentRow(row)
-        item = list_widget.currentItem()
-        if item:
-            self._open_image(Path(item.data(Qt.ItemDataRole.UserRole)))
+        item = self.tree_model.itemFromIndex(cur)
+        if item is None or item.parent() is None:
+            return  # 顶层 split 节点
+        parent = item.parent()
+        row = item.row()
+        new_row = max(0, min(parent.rowCount() - 1, row + delta))
+        if new_row == row:
+            return
+        child_idx = parent.child(new_row).index()
+        self.tree.setCurrentIndex(child_idx)
+        self._on_image_chosen(parent.child(new_row))

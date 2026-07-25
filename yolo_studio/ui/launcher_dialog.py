@@ -21,11 +21,12 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QHBoxLayout,
+    QHeaderView,
     QInputDialog,
     QListWidget,
     QListWidgetItem,
-    QMessageBox,
     QPushButton,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -34,10 +35,13 @@ from qfluentwidgets import (
     CaptionLabel,
     FluentIcon as FIF,
     LineEdit,
+    MessageDialog,
     PrimaryPushButton,
     PushButton,
     StrongBodyLabel,
+    TableWidget,
     TitleLabel,
+    TransparentToolButton,
 )
 
 from yolo_studio.core.class_config import ClassDef
@@ -74,10 +78,26 @@ class NewProjectDialog(QDialog):
         layout.addLayout(path_row)
 
         layout.addWidget(StrongBodyLabel("初始类(每行一个,从 0 开始):"))
-        self.classes_edit = LineEdit()
-        self.classes_edit.setPlaceholderText("例:car\ntruck\npedestrian")
-        self.classes_edit.setMinimumHeight(120)
+
+        # 用 TableWidget(单列 "类名")取代原来的 LineEdit(toPlainText 错位)
+        self.classes_edit = TableWidget()
+        self.classes_edit.setColumnCount(1)
+        self.classes_edit.setHorizontalHeaderLabels(["类名"])
+        self.classes_edit.setRowCount(1)
+        self.classes_edit.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.classes_edit.setAlternatingRowColors(True)
+        # 默认放一个空行(用户直接在第一个格子里输入第一个类名)
+        self.classes_edit.setItem(0, 0, QTableWidgetItem(""))
         layout.addWidget(self.classes_edit, 1)
+
+        # "+" 加一行;行内直接编辑即可
+        add_row = QHBoxLayout()
+        add_row.addStretch(1)
+        add_btn = PushButton(FIF.ADD, "添加类")
+        add_btn.clicked.connect(self._add_class_row)
+        add_row.addWidget(add_btn)
+        add_row.addStretch(1)
+        layout.addLayout(add_row)
 
         btn_row = QHBoxLayout()
         btn_row.addStretch(1)
@@ -89,6 +109,15 @@ class NewProjectDialog(QDialog):
         btn_row.addWidget(ok_btn)
         layout.addLayout(btn_row)
 
+    def _add_class_row(self) -> None:
+        """新增一行(空),光标定位到该行的类名单元格。"""
+        r = self.classes_edit.rowCount()
+        self.classes_edit.insertRow(r)
+        item = QTableWidgetItem("")
+        self.classes_edit.setItem(r, 0, item)
+        self.classes_edit.setCurrentCell(r, 0)
+        self.classes_edit.editItem(item)
+
     def _browse(self) -> None:
         d = QFileDialog.getExistingDirectory(self, "选择项目根目录", self.path_edit.text())
         if d:
@@ -98,16 +127,23 @@ class NewProjectDialog(QDialog):
         name = self.name_edit.text().strip()
         parent_dir = Path(self.path_edit.text().strip())
         if not name:
-            QMessageBox.warning(self, "新建项目", "请输入项目名称。")
+            MessageDialog("新建项目", "请输入项目名称。", self).exec()
             return
         if not parent_dir.exists():
-            QMessageBox.warning(self, "新建项目", f"目录不存在:\n{parent_dir}")
+            MessageDialog("新建项目", f"目录不存在:\n{parent_dir}", self).exec()
             return
-        classes_raw = self.classes_edit.toPlainText().strip()
-        if not classes_raw:
-            QMessageBox.warning(self, "新建项目", "请至少定义一个类。")
+        # 从 TableWidget 收集类名(每行 1 个)
+        class_names: list[str] = []
+        for r in range(self.classes_edit.rowCount()):
+            item = self.classes_edit.item(r, 0)
+            if item is None:
+                continue
+            text = item.text().strip()
+            if text:
+                class_names.append(text)
+        if not class_names:
+            MessageDialog("新建项目", "请至少定义一个类。", self).exec()
             return
-        class_names = [line.strip() for line in classes_raw.splitlines() if line.strip()]
         classes = [ClassDef(class_id=i, name=n) for i, n in enumerate(class_names)]
         target = parent_dir / name
         self._result = (target, name, classes)
@@ -122,7 +158,7 @@ class LauncherDialog(QDialog):
 
     def __init__(self) -> None:
         super().__init__(None)
-        self.setWindowTitle("YOLO Studio — 选择项目")
+        self.setWindowTitle("DetectSphere — 选择项目")
         self.resize(720, 480)
         self._manager = ProjectManager()
         self._selected: Optional[Project] = None
@@ -142,7 +178,7 @@ class LauncherDialog(QDialog):
 
         # 右侧:操作
         right = QVBoxLayout()
-        right.addWidget(TitleLabel("YOLO Studio"))
+        right.addWidget(TitleLabel("DetectSphere"))
         right.addWidget(BodyLabel("通用 YOLO 桌面工作台\n数据集 · 标注 · 训练 · 测试 · 导出"))
         right.addSpacing(16)
         right.addWidget(CaptionLabel(f"项目根:{REPO_ROOT}"))
@@ -201,13 +237,48 @@ class LauncherDialog(QDialog):
 
     def _add_entry_item(self, entry: ProjectEntry) -> None:
         last = time.strftime("%Y-%m-%d %H:%M", time.localtime(entry.last_opened))
-        text = f"{entry.name}\n  {entry.path}\n  {entry.classes_count} 类 · {entry.image_count} 图 · 上次打开 {last}"
-        item = QListWidgetItem(text)
+        # 用 setItemWidget 装复合 widget:左 label + 右删除按钮
+        item = QListWidgetItem()
         item.setData(Qt.ItemDataRole.UserRole, entry.path)
+
+        w = QWidget()
+        h = QHBoxLayout(w)
+        h.setContentsMargins(8, 6, 8, 6)
+        h.setSpacing(8)
+        label = BodyLabel(
+            f"{entry.name}\n  {entry.path}\n  {entry.classes_count} 类 · {entry.image_count} 图 · 上次打开 {last}"
+        )
+        label.setWordWrap(True)
+        h.addWidget(label, 1)
+        del_btn = TransparentToolButton(FIF.DELETE)
+        del_btn.setToolTip("从启动器列表移除(项目文件保留)")
+        del_btn.clicked.connect(lambda _checked=False, p=entry.path: self._on_delete_entry(p))
+        h.addWidget(del_btn, 0, Qt.AlignmentFlag.AlignTop)
+        w.setLayout(h)
+        # 设 item 高度给 widget 留空间
+        item.setSizeHint(w.sizeHint())
         self.list_widget.addItem(item)
+        self.list_widget.setItemWidget(item, w)
 
     def _on_selection_changed(self) -> None:
         self.open_btn.setEnabled(self.list_widget.currentItem() is not None)
+
+    def _on_delete_entry(self, path: str) -> None:
+        """从启动器列表移除某项目(项目文件保留在磁盘)。"""
+        name = Path(path).name
+        if not MessageDialog(
+            "删除项目",
+            f"从启动器列表移除:\n\n{name}\n{path}\n\n(项目文件仍保留在磁盘,可稍后重新添加)",
+            self,
+        ).exec():
+            return
+        self._manager.forget(path)
+        # 移除对应 QListWidgetItem
+        for i in range(self.list_widget.count() - 1, -1, -1):
+            it = self.list_widget.item(i)
+            if it.data(Qt.ItemDataRole.UserRole) == path:
+                self.list_widget.takeItem(i)
+                break
 
     def _on_item_double_clicked(self, item: QListWidgetItem) -> None:
         self._open_path(Path(item.data(Qt.ItemDataRole.UserRole)))
@@ -232,7 +303,7 @@ class LauncherDialog(QDialog):
             try:
                 proj = self._manager.create(target, name=name, classes=classes)
             except Exception as e:
-                QMessageBox.critical(self, "新建项目失败", str(e))
+                MessageDialog("新建项目失败", str(e), self).exec()
                 return
             self._selected = proj
             self.accept()
@@ -241,7 +312,7 @@ class LauncherDialog(QDialog):
         try:
             proj = self._manager.open(path)
         except Exception as e:
-            QMessageBox.critical(self, "打开项目失败", str(e))
+            MessageDialog("打开项目失败", str(e), self).exec()
             return
         self._selected = proj
         self.accept()

@@ -156,18 +156,18 @@ class TrainPage(QWidget):
         self.epochs_spin = SpinBox()
         self.epochs_spin.setRange(1, 10000)
         self.epochs_spin.setValue(10)
-        form_box.addRow("Epochs:", self.epochs_spin)
+        form_box.addRow("训练轮数:", self.epochs_spin)
 
         self.batch_spin = SpinBox()
         self.batch_spin.setRange(1, 256)
         self.batch_spin.setValue(4)
-        form_box.addRow("Batch:", self.batch_spin)
+        form_box.addRow("批大小:", self.batch_spin)
 
         self.imgsz_spin = SpinBox()
         self.imgsz_spin.setRange(32, 2048)
         self.imgsz_spin.setSingleStep(32)
         self.imgsz_spin.setValue(640)
-        form_box.addRow("imgsz:", self.imgsz_spin)
+        form_box.addRow("图像尺寸:", self.imgsz_spin)
 
         self.device_combo = _DeviceCombo()
         form_box.addRow("设备:", self.device_combo)
@@ -175,12 +175,12 @@ class TrainPage(QWidget):
         self.patience_spin = SpinBox()
         self.patience_spin.setRange(0, 1000)
         self.patience_spin.setValue(20)
-        form_box.addRow("Patience:", self.patience_spin)
+        form_box.addRow("早停耐心值:", self.patience_spin)
 
         self.save_period_spin = SpinBox()
         self.save_period_spin.setRange(1, 100)
         self.save_period_spin.setValue(10)
-        form_box.addRow("Save period:", self.save_period_spin)
+        form_box.addRow("保存间隔(轮):", self.save_period_spin)
 
         self.augment_check = QCheckBox("启用数据增强")
         self.augment_check.setChecked(True)
