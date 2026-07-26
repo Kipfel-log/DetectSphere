@@ -1,15 +1,15 @@
-"""CapturePage — 电脑摄像头数据采集页。
+"""CapturePage — 电脑与手机多模式数据采集页。
 
-功能:
-- 实时调取电脑摄像头画面 (使用 AspectVideoWidget 自适应居中渲染，绝对不拉伸变形)
-- 支持分辨率选项 (自动相机默认 / 16:9 HD / 16:9 FHD / 4:3 VGA / 4:3 XGA)
-- 单张拍照 (支持鼠标按钮与键盘 Space 快捷键)
-- 倒计时自动连拍 (配合 Fluent ProgressRing 环形进度条与秒数倒数显示)
-- 拍照后在右侧“待确认”暂存列表中呈现照片缩略图与尺寸信息
-- 暂存列表背景采用透明材质，完美融入主界面 Fluent 主题风格
-- 导入前可随时删除特定不满意照片或一键清空
-- 强制导入至“未划分 (unassigned)”数据集
-- 一键“确认导入未划分数据集”，自动复制图片、更新数据库索引，并通知标注页与数据集页刷新
+功能架构:
+- 顶端 SegmentedWidget 选项卡导航: [电脑摄像头采集] | [手机无线采集]
+- QStackedWidget 控制模式面板切换:
+  - PCWebcamWidget: 本地电脑摄像头高帧率采集 (支持 1080p/720p 比例自适应，倒计时 ProgressRing 连拍)
+  - MobileCapturePanel: 局域网 H5 手机无线采集 (扫码/URL 访问，6 位验证码，5 分钟倒计时重置，无感后台上传)
+- 右侧共享暂存照片列表 ("待确认照片"):
+  - 无论从电脑摄像头拍照还是从手机端无线上传的照片，统一自动流入右侧暂存区
+  - 提供缩略图、尺寸/拍摄时间展示与单张快速删除按钮
+- 强制导入未划分数据集:
+  - 一键“确认导入未划分数据集”，将暂存库所有有效照片同步存入 `data/images` 并更新 DB 与主界面广播
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QEvent, QObject, QRectF, QSize, Qt, Slot, QTimer
+from PySide6.QtCore import QEvent, QObject, QRectF, QSize, Qt, Signal, Slot, QTimer
 from PySide6.QtGui import QColor, QFont, QIcon, QImage, QKeySequence, QPainter, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QSplitter,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -40,62 +41,17 @@ from qfluentwidgets import (
     PrimaryPushButton,
     ProgressRing,
     PushButton,
+    SegmentedWidget,
     StrongBodyLabel,
+    TitleLabel,
     TransparentToolButton,
 )
 
 from yolo_studio.core.db import ProjectDB
 from yolo_studio.core.project import Project
 from yolo_studio.workers.camera_stream_worker import CameraStreamWorker
-
-
-class AspectVideoWidget(QWidget):
-    """自适应等比例居中渲染视频画面，绝对不拉伸变形。"""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._pixmap = QPixmap()
-        self._text = "摄像头未启动\n点击上方「启动摄像头」按钮进行采集"
-        self.setMinimumSize(640, 480)
-        self.setStyleSheet("background-color: #1a1a1e; border-radius: 8px; border: 1px solid #333;")
-
-    def setPixmap(self, pixmap: QPixmap) -> None:
-        self._pixmap = pixmap
-        self._text = ""
-        self.update()
-
-    def setText(self, text: str) -> None:
-        self._pixmap = QPixmap()
-        self._text = text
-        self.update()
-
-    def paintEvent(self, event) -> None:
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-
-        # 绘制黑灰色底框
-        painter.fillRect(self.rect(), QColor("#1a1a1e"))
-
-        if not self._pixmap.isNull():
-            # 计算 KeepAspectRatio 居中绘图 (KeepAspectRatio 完整展示不变形)
-            target_rect = QRectF(self.rect())
-            pw, ph = self._pixmap.width(), self._pixmap.height()
-            tw, th = target_rect.width(), target_rect.height()
-
-            scale = min(tw / pw, th / ph)
-            dw = pw * scale
-            dh = ph * scale
-            dx = (tw - dw) / 2
-            dy = (th - dh) / 2
-
-            dest = QRectF(dx, dy, dw, dh)
-            painter.drawPixmap(dest, self._pixmap, QRectF(self._pixmap.rect()))
-        elif self._text:
-            painter.setPen(QColor("#888888"))
-            font = QFont("Segoe UI", 11)
-            painter.setFont(font)
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self._text)
+from yolo_studio.ui.widgets.aspect_video_widget import AspectVideoWidget
+from yolo_studio.ui.widgets.mobile_capture_panel import MobileCapturePanel
 
 
 class StagedItemWidget(QWidget):
@@ -158,42 +114,31 @@ class StagedItemWidget(QWidget):
         layout.addWidget(self.del_btn)
 
 
-class CapturePage(QWidget):
-    """数据采集页。"""
+class PCWebcamWidget(QWidget):
+    """电脑摄像头采集控制面板。"""
 
-    def __init__(self, project: Project, db: ProjectDB) -> None:
-        super().__init__()
-        self.project = project
-        self.db = db
+    photoCaptured = Signal(QImage, str)
 
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
         self._worker: Optional[CameraStreamWorker] = None
         self._current_qimage: Optional[QImage] = None
-        self._staged_items: list[tuple[QImage, str]] = []  # [(qimg, timestamp_str), ...]
-        self._capture_count = 0
 
         # 倒计时连拍 Timer 控速
         self._countdown_timer = QTimer(self)
-        self._countdown_timer.setInterval(50)  # 50ms 刷新一次 ProgressRing
+        self._countdown_timer.setInterval(50)
         self._countdown_timer.timeout.connect(self._on_countdown_tick)
         self._total_interval_ms = 0
         self._elapsed_ms = 0
 
-        main_layout = QHBoxLayout(self)
-        main_layout.setContentsMargins(16, 16, 16, 16)
-
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        main_layout.addWidget(splitter)
-
-        # ── 左侧: 摄像头视频画面与控制 ──
-        left_widget = QWidget()
-        left_layout = QVBoxLayout(left_widget)
+        left_layout = QVBoxLayout(self)
         left_layout.setContentsMargins(0, 0, 8, 0)
         left_layout.setSpacing(10)
 
         # 头部控制栏
         left_header = QHBoxLayout()
         left_header.setSpacing(10)
-        left_header.addWidget(StrongBodyLabel("摄像头画帧采集"))
+        left_header.addWidget(StrongBodyLabel("电脑摄像头画帧采集"))
 
         self.cam_combo = ComboBox()
         for i in range(4):
@@ -225,7 +170,7 @@ class CapturePage(QWidget):
 
         left_layout.addLayout(left_header)
 
-        # 视频画面展示框 (使用自适应 AspectVideoWidget 绝对不变形)
+        # 视频画面展示框
         self.video_widget = AspectVideoWidget(self)
         left_layout.addWidget(self.video_widget, 1)
 
@@ -259,57 +204,8 @@ class CapturePage(QWidget):
         left_bottom.addWidget(self.progress_ring)
 
         left_bottom.addStretch(1)
-        self.count_label = StrongBodyLabel("已抓取: 0 张")
-        left_bottom.addWidget(self.count_label)
-
         left_layout.addLayout(left_bottom)
-        splitter.addWidget(left_widget)
 
-        # ── 右侧: 待确认照片暂存列表与导入 ──
-        right_widget = QWidget()
-        right_layout = QVBoxLayout(right_widget)
-        right_layout.setContentsMargins(8, 0, 0, 0)
-        right_layout.setSpacing(10)
-
-        # 标题栏
-        right_header = QHBoxLayout()
-        self.staged_title = StrongBodyLabel("待确认导入照片 (0 张)")
-        right_header.addWidget(self.staged_title)
-        right_header.addStretch(1)
-
-        self.clear_btn = PushButton(FIF.DELETE, "清空全部")
-        self.clear_btn.setEnabled(False)
-        self.clear_btn.clicked.connect(self._on_clear_all)
-        right_header.addWidget(self.clear_btn)
-
-        right_layout.addLayout(right_header)
-
-        # 暂存列表框 (QListWidget — 透明暗色融合主题)
-        self.staged_list = QListWidget()
-        self.staged_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
-        self.staged_list.setStyleSheet(
-            "QListWidget { background-color: transparent; border: 1px solid rgba(128, 128, 128, 0.2); border-radius: 8px; outline: none; }"
-            "QListWidget::item { background: transparent; border-bottom: 1px solid rgba(128, 128, 128, 0.1); border-radius: 6px; margin: 2px 4px; }"
-            "QListWidget::item:hover { background-color: rgba(128, 128, 128, 0.08); }"
-            "QListWidget::item:selected { background-color: rgba(128, 128, 128, 0.15); }"
-        )
-        right_layout.addWidget(self.staged_list, 1)
-
-        # 确认导入未划分数据集大按钮
-        self.import_btn = PrimaryPushButton(FIF.DOWNLOAD, "确认导入未划分数据集")
-        self.import_btn.setEnabled(False)
-        self.import_btn.clicked.connect(self._on_confirm_import)
-        right_layout.addWidget(self.import_btn)
-
-        splitter.addWidget(right_widget)
-
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 2)
-
-        # 绑定键盘 Space 快捷键
-        QShortcut(QKeySequence(Qt.Key.Key_Space), self, activated=self._on_space_pressed)
-
-    # ---- 摄像头控制 ----
     def _on_start(self) -> None:
         if self._worker is not None and self._worker.isRunning():
             return
@@ -373,7 +269,6 @@ class CapturePage(QWidget):
             duration=4000,
         )
 
-    # ---- 倒计时连拍逻辑 ----
     def _on_auto_combo_changed(self, idx: int) -> None:
         ms = int(self.auto_combo.currentData() or 0)
         if ms > 0:
@@ -409,24 +304,156 @@ class CapturePage(QWidget):
             self._on_snapshot()
             self._elapsed_ms = 0
 
-    # ---- 拍照逻辑 ----
-    def _on_space_pressed(self) -> None:
-        if self.snap_btn.isEnabled():
-            self._on_snapshot()
-
     def _on_snapshot(self) -> None:
         if self._current_qimage is None:
             return
-
-        self._capture_count += 1
         ts_str = time.strftime("%Y-%m-%d %H:%M:%S")
+        self.photoCaptured.emit(self._current_qimage.copy(), ts_str)
 
-        qimg_copy = self._current_qimage.copy()
-        self._staged_items.append((qimg_copy, ts_str))
+    def closeEvent(self, event) -> None:
+        if self._countdown_timer.isActive():
+            self._countdown_timer.stop()
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.stop()
+            self._worker.wait(2000)
+        super().closeEvent(event)
 
-        # 添加到右侧暂存 ListWidget
+
+class CapturePage(QWidget):
+    """数据采集页 (包含电脑摄像头与手机无线双模式选项卡)。"""
+
+    def __init__(self, project: Project, db: ProjectDB) -> None:
+        super().__init__()
+        self.project = project
+        self.db = db
+
+        self._staged_items: list[tuple[QImage, str]] = []  # [(qimg, timestamp_str), ...]
+        self._capture_count = 0
+
+        main_vbox = QVBoxLayout(self)
+        main_vbox.setContentsMargins(16, 16, 16, 16)
+        main_vbox.setSpacing(12)
+
+        # 顶端模式切换 SegmentedWidget 选项卡
+        main_vbox.addWidget(TitleLabel("多端数据素材采集"))
+
+        self.pivot = SegmentedWidget(self)
+        main_vbox.addWidget(self.pivot)
+
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.setChildrenCollapsible(False)
+        main_vbox.addWidget(self.splitter, 1)
+
+        # ── 左侧 StackedWidget (电脑面板 vs 手机面板) ──
+        self.stacked_widget = QStackedWidget(self)
+
+        self.pc_panel = PCWebcamWidget(self)
+        self.pc_panel.photoCaptured.connect(self._add_staged_photo)
+
+        self.mobile_panel = MobileCapturePanel(self)
+        self.mobile_panel.photoReceived.connect(self._add_staged_photo)
+        self.mobile_panel.stateChanged.connect(self._on_mobile_state_changed)
+
+        self.stacked_widget.addWidget(self.pc_panel)
+        self.stacked_widget.addWidget(self.mobile_panel)
+
+        # 绑定 SegmentedWidget 选项卡
+        self.pivot.addItem(
+            routeKey="pc",
+            text="电脑摄像头采集",
+            onClick=lambda: self._switch_tab(0),
+        )
+        self.pivot.addItem(
+            routeKey="mobile",
+            text="手机无线采集",
+            onClick=lambda: self._switch_tab(1),
+        )
+
+        self.pivot.setCurrentItem("pc")
+        self.stacked_widget.setCurrentWidget(self.pc_panel)
+
+        self.splitter.addWidget(self.stacked_widget)
+
+        # ── 右侧: 共享待确认照片暂存列表与导入 ──
+        self.right_widget = QWidget()
+        self.right_widget.setMinimumWidth(340)
+        right_layout = QVBoxLayout(self.right_widget)
+        right_layout.setContentsMargins(8, 0, 0, 0)
+        right_layout.setSpacing(10)
+
+        # 标题栏
+        right_header = QHBoxLayout()
+        self.staged_title = StrongBodyLabel("待确认导入照片 (0 张)")
+        right_header.addWidget(self.staged_title)
+        right_header.addStretch(1)
+
+        self.clear_btn = PushButton(FIF.DELETE, "清空全部")
+        self.clear_btn.setEnabled(False)
+        self.clear_btn.clicked.connect(self._on_clear_all)
+        right_header.addWidget(self.clear_btn)
+
+        right_layout.addLayout(right_header)
+
+        # 暂存列表框 (QListWidget — 透明暗色融合主题)
+        self.staged_list = QListWidget()
+        self.staged_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        self.staged_list.setStyleSheet(
+            "QListWidget { background-color: transparent; border: 1px solid rgba(128, 128, 128, 0.2); border-radius: 8px; outline: none; }"
+            "QListWidget::item { background: transparent; border-bottom: 1px solid rgba(128, 128, 128, 0.1); border-radius: 6px; margin: 2px 4px; }"
+            "QListWidget::item:hover { background-color: rgba(128, 128, 128, 0.08); }"
+            "QListWidget::item:selected { background-color: rgba(128, 128, 128, 0.15); }"
+        )
+        right_layout.addWidget(self.staged_list, 1)
+
+        # 计数指示
+        self.count_label = CaptionLabel("已抓取: 0 张")
+        right_layout.addWidget(self.count_label)
+
+        # 确认导入未划分数据集大按钮
+        self.import_btn = PrimaryPushButton(FIF.DOWNLOAD, "确认导入未划分数据集")
+        self.import_btn.setEnabled(False)
+        self.import_btn.clicked.connect(self._on_confirm_import)
+        right_layout.addWidget(self.import_btn)
+
+        self.splitter.addWidget(self.right_widget)
+
+        self.splitter.setStretchFactor(0, 3)
+        self.splitter.setStretchFactor(1, 2)
+        self.splitter.setSizes([700, 350])
+
+        # 绑定键盘 Space 快捷键 (在电脑模式生效)
+        QShortcut(QKeySequence(Qt.Key.Key_Space), self, activated=self._on_space_pressed)
+
+    def _switch_tab(self, index: int) -> None:
+        self.stacked_widget.setCurrentIndex(index)
+        if index == 1:  # 手机无线采集模式
+            self.mobile_panel.activate()
+            has_devices = len(self.mobile_panel.server_mgr.active_devices) > 0 or getattr(self.mobile_panel, "has_staged_photos", False)
+            self._set_right_widget_visible(has_devices)
+        else:
+            self.mobile_panel.deactivate()
+            self._set_right_widget_visible(True)
+
+    @Slot(bool)
+    def _on_mobile_state_changed(self, has_devices: bool) -> None:
+        if self.stacked_widget.currentIndex() == 1:
+            self._set_right_widget_visible(has_devices)
+
+    def _set_right_widget_visible(self, visible: bool) -> None:
+        if self.right_widget.isVisible() == visible:
+            return
+        self.right_widget.setVisible(visible)
+        if visible:
+            self.splitter.setSizes([700, 350])
+
+    # ---- 照片装载入库 ----
+    @Slot(QImage, str)
+    def _add_staged_photo(self, qimg: QImage, ts_str: str) -> None:
+        self._capture_count += 1
+        self._staged_items.append((qimg, ts_str))
+
         item_widget = StagedItemWidget(
-            qimg=qimg_copy,
+            qimg=qimg,
             index_num=self._capture_count,
             timestamp_str=ts_str,
             on_delete_cb=self._on_delete_item_widget,
@@ -442,17 +469,18 @@ class CapturePage(QWidget):
 
         self._update_staged_ui()
 
-    # ---- 删除 & 清空 ----
+    def _on_space_pressed(self) -> None:
+        if self.stacked_widget.currentIndex() == 0 and self.pc_panel.snap_btn.isEnabled():
+            self.pc_panel._on_snapshot()
+
     def _on_delete_item_widget(self, widget: StagedItemWidget) -> None:
-        """从 ListWidget 中找到对应的 row 并删除。"""
         for row in range(self.staged_list.count()):
             item = self.staged_list.item(row)
             w = self.staged_list.itemWidget(item)
             if w == widget:
-                # 从内存列表移除
                 idx = item.data(Qt.ItemDataRole.UserRole)
                 if 0 <= idx < len(self._staged_items):
-                    self._staged_items[idx] = (QImage(), "")  # 标记空
+                    self._staged_items[idx] = (QImage(), "")
                 self.staged_list.takeItem(row)
                 break
         self._update_staged_ui()
@@ -469,14 +497,15 @@ class CapturePage(QWidget):
         has_items = active_count > 0
         self.clear_btn.setEnabled(has_items)
         self.import_btn.setEnabled(has_items)
+        
+        self.mobile_panel.has_staged_photos = has_items
+        self.mobile_panel._update_layout_state()
 
-    # ---- 确认导入 (强制未划分) ----
     def _on_confirm_import(self) -> None:
         valid_photos = [qimg for qimg, _ in self._staged_items if not qimg.isNull()]
         if not valid_photos:
             return
 
-        # 强制导入至未划分目录
         dst_dir = self.project.images_dir
         dst_dir.mkdir(parents=True, exist_ok=True)
 
@@ -488,7 +517,6 @@ class CapturePage(QWidget):
             file_path = dst_dir / filename
 
             if qimg.save(str(file_path), "PNG"):
-                # 写入数据库 (存入 unassigned)
                 try:
                     img_id = self.db.upsert_image(str(file_path.resolve()))
                 except Exception:
@@ -503,21 +531,16 @@ class CapturePage(QWidget):
             duration=3500,
         )
 
-        # 清空暂存区
         self._on_clear_all()
 
-        # 触发广播更新其他页面
         parent_main = self.window()
         if hasattr(parent_main, "annotate_page"):
             parent_main.annotate_page.refresh()
         if hasattr(parent_main, "dataset_page"):
             parent_main.dataset_page.refresh()
 
-    # ---- 关闭清理 ----
     def closeEvent(self, event) -> None:
-        if self._countdown_timer.isActive():
-            self._countdown_timer.stop()
-        if self._worker is not None and self._worker.isRunning():
-            self._worker.stop()
-            self._worker.wait(2000)
+        self.pc_panel.closeEvent(event)
+        self.mobile_panel.deactivate()
+        self.mobile_panel.server_mgr.stop_server()
         super().closeEvent(event)

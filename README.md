@@ -9,6 +9,7 @@
 ## ✨ 主要特性
 
 - 🗂️ **多项目架构** — 每个项目独立目录,自带数据/类定义/模型/SQLite,项目间互不干扰
+- 📷 **多端素材采集** — 支持电脑摄像头高帧率采集与 H5 手机局域网无线拍照采集 (支持多设备并发、扫码/6位配对码、心跳保活与状态提醒)
 - 🏷️ **类可编辑** — 在 GUI 里增删改类名、调整 ID,自动写回 `dataset.yaml`
 - ✏️ **手动标注** — 拖拽画框 / 删除 / 撤销(D 删、Ctrl+S 存)
 - 🤖 **AI 辅助标注** — 用已有模型预标注,人工修正(Phase C)
@@ -33,6 +34,8 @@ yolo/
 │   │   ├── paths.py / project.py / project_manager.py
 │   │   ├── class_config.py / dataset.py / db.py
 │   │   ├── image_utils.py           # EXIF 旋转 + 框坐标变换
+│   │   ├── mobile_server.py         # 手机无线采集 HTTP 服务与心跳协议
+│   │   ├── qr_utils.py              # ISO/IEC 18004 标准二维码渲染
 │   │   ├── model_registry.py
 │   │   ├── train.py / export.py / metrics.py / inference.py
 │   │   └── io/                      # labels / manifest / formats / ls_client

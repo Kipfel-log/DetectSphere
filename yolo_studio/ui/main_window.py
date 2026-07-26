@@ -187,10 +187,13 @@ class MainWindow(FluentWindow):
                     cam_worker.stop()
                     cam_worker.wait(2000)
             if hasattr(self, "capture_page"):
-                cap_worker = self.capture_page._worker
-                if cap_worker is not None and cap_worker.isRunning():
-                    cap_worker.stop()
-                    cap_worker.wait(2000)
+                pc_worker = getattr(self.capture_page.pc_panel, "_worker", None)
+                if pc_worker is not None and pc_worker.isRunning():
+                    pc_worker.stop()
+                    pc_worker.wait(2000)
+                if hasattr(self.capture_page, "mobile_panel"):
+                    self.capture_page.mobile_panel.deactivate()
+                    self.capture_page.mobile_panel.server_mgr.stop_server()
             if hasattr(self, "db"):
                 self.db.close()
         except Exception:
