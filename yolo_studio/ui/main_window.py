@@ -61,10 +61,16 @@ class MainWindow(FluentWindow):
 
     def _build_step1(self) -> None:
         from yolo_studio.ui.pages.dataset_page import DatasetPage
-        self.status_changed.emit("正在初始化数据集预览页面...")
+        from yolo_studio.ui.pages.capture_page import CapturePage
+
+        self.status_changed.emit("正在初始化数据集预览与采集页面...")
         QApplication.processEvents()
         self.dataset_page = DatasetPage(self.project, self.db)
         self.dataset_page.setObjectName("datasetPage")
+
+        self.capture_page = CapturePage(self.project, self.db)
+        self.capture_page.setObjectName("capturePage")
+
         QTimer.singleShot(0, self._build_step2)
 
     def _build_step2(self) -> None:
@@ -125,6 +131,7 @@ class MainWindow(FluentWindow):
     # ---- 导航 ----
     def _add_navigation(self) -> None:
         self.addSubInterface(self.dataset_page, FIF.PHOTO, "数据集", position=NavigationItemPosition.TOP)
+        self.addSubInterface(self.capture_page, FIF.VIDEO, "采集", position=NavigationItemPosition.TOP)
         self.addSubInterface(self.annotate_page, FIF.EDIT, "标注", position=NavigationItemPosition.TOP)
         self.addSubInterface(self.train_page, FIF.PLAY, "训练", position=NavigationItemPosition.TOP)
         self.addSubInterface(self.model_registry_page, FIF.ROBOT, "模型", position=NavigationItemPosition.TOP)
@@ -179,6 +186,11 @@ class MainWindow(FluentWindow):
                 if cam_worker is not None and cam_worker.isRunning():
                     cam_worker.stop()
                     cam_worker.wait(2000)
+            if hasattr(self, "capture_page"):
+                cap_worker = self.capture_page._worker
+                if cap_worker is not None and cap_worker.isRunning():
+                    cap_worker.stop()
+                    cap_worker.wait(2000)
             if hasattr(self, "db"):
                 self.db.close()
         except Exception:
