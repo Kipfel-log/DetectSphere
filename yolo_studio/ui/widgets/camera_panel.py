@@ -148,10 +148,19 @@ class CameraPanel(QWidget):
         right.addLayout(btn_row)
 
         # 截图按钮
+        snap_row = QHBoxLayout()
         self.snapshot_btn = PushButton(FIF.SAVE, "保存截图")
         self.snapshot_btn.setEnabled(False)
         self.snapshot_btn.clicked.connect(self._on_snapshot)
-        right.addWidget(self.snapshot_btn)
+        snap_row.addWidget(self.snapshot_btn)
+
+        self.snapshot_ds_btn = PushButton(FIF.ADD, "保存并入库")
+        self.snapshot_ds_btn.setEnabled(False)
+        self.snapshot_ds_btn.setToolTip("将截图直接存入未划分数据集(unassigned)")
+        self.snapshot_ds_btn.clicked.connect(self._on_snapshot_to_dataset)
+        snap_row.addWidget(self.snapshot_ds_btn)
+
+        right.addLayout(snap_row)
 
         # FPS + 检测统计
         right.addSpacing(8)
@@ -236,6 +245,7 @@ class CameraPanel(QWidget):
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self.snapshot_btn.setEnabled(True)
+        self.snapshot_ds_btn.setEnabled(True)
         self.camera_combo.setEnabled(False)
         self.model_combo.setEnabled(False)
         self.video_label.setText("摄像头启动中…")
@@ -254,8 +264,10 @@ class CameraPanel(QWidget):
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.snapshot_btn.setEnabled(False)
+        self.snapshot_ds_btn.setEnabled(False)
         self.camera_combo.setEnabled(True)
         self.model_combo.setEnabled(True)
+
 
     # ---- 帧回调 ----
     @Slot(QImage, list)
@@ -336,6 +348,29 @@ class CameraPanel(QWidget):
             InfoBar.error(
                 title="保存失败",
                 content=f,
+                parent=self,
+                position=InfoBarPosition.TOP,
+            )
+
+    def _on_snapshot_to_dataset(self) -> None:
+        if self._current_qimage is None:
+            return
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        unassigned_dir = self.project.dataset_dir / "unassigned" / "images"
+        unassigned_dir.mkdir(parents=True, exist_ok=True)
+        dest_path = unassigned_dir / f"cam_{ts}.png"
+        if self._current_qimage.save(str(dest_path), "PNG"):
+            InfoBar.success(
+                title="入库成功",
+                content=f"已保存并添加至未划分数据集: {dest_path.name}",
+                parent=self,
+                position=InfoBarPosition.TOP,
+                duration=3000,
+            )
+        else:
+            InfoBar.error(
+                title="入库失败",
+                content="写入图片失败",
                 parent=self,
                 position=InfoBarPosition.TOP,
             )

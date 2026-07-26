@@ -39,6 +39,10 @@ class Project:
 
     # ---- 路径便捷访问 ----
     @property
+    def root_dir(self) -> Path:
+        return self.root
+
+    @property
     def data_dir(self) -> Path:
         return self.root / "data"
 

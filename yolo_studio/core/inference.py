@@ -121,3 +121,28 @@ class Predictor:
         except Exception:
             # 兜底:返回原图
             return frame
+
+
+def results_to_boxes(results) -> list:
+    """将 Ultralytics predict 返回的 results 列表转换为项目内部 Box 对象列表。"""
+    from yolo_studio.core.io.labels import Box
+
+    boxes: list[Box] = []
+    if not results:
+        return boxes
+    for r in results:
+        if r.boxes is None:
+            continue
+        xywhn = r.boxes.xywhn.cpu().numpy()
+        classes = r.boxes.cls.cpu().numpy()
+        for b, c in zip(xywhn, classes):
+            boxes.append(
+                Box(
+                    class_id=int(c),
+                    xc=float(b[0]),
+                    yc=float(b[1]),
+                    w=float(b[2]),
+                    h=float(b[3]),
+                )
+            )
+    return boxes

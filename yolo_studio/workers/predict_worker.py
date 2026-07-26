@@ -150,3 +150,73 @@ class CameraFrameWorker(QThread):
         finally:
             if cap is not None:
                 cap.release()
+
+
+class AutoLabelWorker(QThread):
+    """自动 AI 预标注工作线程。
+
+    对给定图片列表跑推理，并将推理得到的框保存为 YOLO txt 标注文件。
+    """
+
+    progress = Signal(int, int)  # (done, total)
+    finished_autolabel = Signal(int)  # count of images labeled
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        project,
+        model_path: Path,
+        image_paths: list[Path],
+        conf: float = 0.35,
+        iou: float = 0.7,
+        only_unlabeled: bool = True,
+        parent: QThread | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._project = project
+        self._model_path = Path(model_path)
+        self._image_paths = list(image_paths)
+        self._conf = conf
+        self._iou = iou
+        self._only_unlabeled = only_unlabeled
+
+    def run(self) -> None:
+        try:
+            from yolo_studio.core.inference import Predictor, results_to_boxes
+            from yolo_studio.core.dataset import save_boxes_for_image
+            from yolo_studio.core.io.labels import has_label_file
+
+            predictor = Predictor(self._model_path, conf=self._conf, iou=self._iou)
+            count = 0
+            total = len(self._image_paths)
+
+            for i, img_path in enumerate(self._image_paths):
+                # 如果设置只对未标注执行，检查同名 txt 文件
+                # dataset/unassigned 里的标注放在 dataset/unassigned/labels，其他在 train/val/test/labels
+                # save_boxes_for_image 能自动确定位置
+                if self._only_unlabeled:
+                    from yolo_studio.core.dataset import _resolve_label_path
+                    lbl_path = _resolve_label_path(self._project, img_path)
+                    if lbl_path.exists():
+                        self.progress.emit(i + 1, total)
+                        continue
+
+                results = predictor.predict_image(img_path)
+                boxes = results_to_boxes(results)
+                if boxes:
+                    save_boxes_for_image(self._project, img_path, boxes)
+                    try:
+                        from yolo_studio.core.db import ProjectDB
+                        db = ProjectDB(self._project.db_path)
+                        img_id = db.upsert_image(str(img_path.resolve()))
+                        db.set_is_ai(img_id, True)
+                    except Exception:
+                        pass
+                    count += 1
+
+                self.progress.emit(i + 1, total)
+
+            self.finished_autolabel.emit(count)
+        except Exception as e:
+            import traceback
+            self.failed.emit(f"{type(e).__name__}: {e}\n{traceback.format_exc()}")

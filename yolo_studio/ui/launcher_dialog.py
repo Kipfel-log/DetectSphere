@@ -59,6 +59,18 @@ class NewProjectDialog(QDialog):
         self.resize(480, 360)
         self._result: Optional[tuple[Path, str, list[ClassDef]]] = None
 
+        try:
+            from qfluentwidgets.window import WindowEffect
+            self.window_effect = WindowEffect()
+            self.window_effect.setAcrylicEffect(int(self.winId()), "F8F9FACC", True)
+        except Exception:
+            try:
+                from qfluentwidgets import WindowEffect
+                self.window_effect = WindowEffect()
+                self.window_effect.setAcrylicEffect(int(self.winId()), "F8F9FACC", True)
+            except Exception:
+                pass
+
         layout = QVBoxLayout(self)
 
         layout.addWidget(StrongBodyLabel("项目名称:"))
@@ -159,13 +171,26 @@ class LauncherDialog(QDialog):
     def __init__(self) -> None:
         super().__init__(None)
         self.setWindowTitle("DetectSphere — 选择项目")
-        self.resize(720, 480)
+        self.resize(760, 500)
         self._manager = ProjectManager()
         self._selected: Optional[Project] = None
 
+        # 原生半透明 Acrylic 玻璃材质效果
+        try:
+            from qfluentwidgets.window import WindowEffect
+            self.window_effect = WindowEffect()
+            self.window_effect.setAcrylicEffect(int(self.winId()), "F8F9FACC", True)
+        except Exception:
+            try:
+                from qfluentwidgets import WindowEffect
+                self.window_effect = WindowEffect()
+                self.window_effect.setAcrylicEffect(int(self.winId()), "F8F9FACC", True)
+            except Exception:
+                pass
+
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(20)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(24)
 
         # 左侧:项目列表
         left = QVBoxLayout()

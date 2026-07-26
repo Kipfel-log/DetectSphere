@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS images (
     is_done INTEGER NOT NULL DEFAULT 0,
     last_labeled_at TEXT,
     imported_at TEXT,
-    labels_rotated INTEGER NOT NULL DEFAULT 0
+    labels_rotated INTEGER NOT NULL DEFAULT 0,
+    is_ai INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_images_split ON images(split);
 CREATE INDEX IF NOT EXISTS idx_images_done ON images(is_done);
@@ -119,6 +120,10 @@ class ProjectDB:
                 conn.execute(
                     "ALTER TABLE images ADD COLUMN labels_rotated INTEGER NOT NULL DEFAULT 0"
                 )
+            if "is_ai" not in cols:
+                conn.execute(
+                    "ALTER TABLE images ADD COLUMN is_ai INTEGER NOT NULL DEFAULT 0"
+                )
 
     @contextmanager
     def cursor(self) -> Iterator[sqlite3.Cursor]:
@@ -159,6 +164,19 @@ class ProjectDB:
                 "UPDATE images SET is_done=?, last_labeled_at=? WHERE id=?",
                 (1 if is_done else 0, time.strftime("%Y-%m-%dT%H:%M:%S"), image_id),
             )
+
+    def set_is_ai(self, image_id: int, is_ai: bool) -> None:
+        with self.cursor() as cur:
+            cur.execute(
+                "UPDATE images SET is_ai=? WHERE id=?",
+                (1 if is_ai else 0, image_id),
+            )
+
+    def get_ai_image_paths(self) -> set[str]:
+        """返回所有标记为 AI 预标注的图像绝对路径集合。"""
+        with self.cursor() as cur:
+            cur.execute("SELECT path FROM images WHERE is_ai=1")
+            return {row["path"] for row in cur.fetchall()}
 
     def get_labels_rotated(self, image_id: int) -> bool:
         """返回该图像的 .txt 是否已经在"已应用 EXIF 旋转"的坐标空间。

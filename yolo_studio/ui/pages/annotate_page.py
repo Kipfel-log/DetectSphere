@@ -121,9 +121,18 @@ class AnnotatePage(QWidget):
         self.save_action = QAction(FIF.SAVE.icon(), "保存 (Ctrl+S)")
         self.save_action.setToolTip("保存 (Ctrl+S)")
         self.save_action.triggered.connect(self._save_current)
-        self.save_next_action = QAction(FIF.SAVE.icon(), "保存并下一张 (Ctrl+Enter)")
+        self.save_next_action = QAction(FIF.RIGHT_ARROW.icon(), "保存并下一张 (Ctrl+Enter)")
         self.save_next_action.setToolTip("保存当前并跳到下一张 (Ctrl+Enter)")
         self.save_next_action.triggered.connect(self._on_save_next)
+
+        self.ai_annotate_action = QAction(FIF.ROBOT.icon(), "AI 预标注")
+        self.ai_annotate_action.setToolTip("使用当前模型预标注此图")
+        self.ai_annotate_action.triggered.connect(self._on_ai_annotate_current)
+
+        self.ai_batch_action = QAction(FIF.ALBUM.icon(), "批量 AI 预标注")
+        self.ai_batch_action.setToolTip("对未标注图片批量自动预标注")
+        self.ai_batch_action.triggered.connect(self._on_ai_annotate_batch)
+
         self.tips_action = QAction(FIF.QUESTION.icon(), "快捷键")
         self.tips_action.setToolTip("查看快捷键")
         self.tips_action.triggered.connect(self._show_tips)
@@ -136,9 +145,13 @@ class AnnotatePage(QWidget):
         self.command_bar.addAction(self.save_action)
         self.command_bar.addAction(self.save_next_action)
         self.command_bar.addSeparator()
+        self.command_bar.addAction(self.ai_annotate_action)
+        self.command_bar.addAction(self.ai_batch_action)
+        self.command_bar.addSeparator()
         self.command_bar.addAction(self.tips_action)
         # 兼容旧代码里对 self.draw_btn 的引用
         self.draw_btn = self.draw_action
+
 
         # nav_label 放成独立行 — CommandBar.addWidget 在某些样式下 widget 会被挤压/隐藏
         nav_row = QHBoxLayout()
@@ -291,13 +304,29 @@ class AnnotatePage(QWidget):
     def _populate_image_lists(self) -> None:
         """扫描所有 split(按 sha256 去重),填充各 split 的子节点。"""
         buckets = list_all_images_by_split(self.project)
+        try:
+            ai_paths = self.db.get_ai_image_paths()
+        except Exception:
+            ai_paths = set()
+
         for split, top in self._top_items.items():
             top.removeRows(0, top.rowCount())
             for path, name, has_boxes in buckets.get(split, []):
-                mark = "●" if has_boxes else "○"
-                child = QStandardItem(f"{mark} {name}")
-                child.setData(str(path), Qt.ItemDataRole.UserRole)
-                child.setToolTip(str(path))
+                p_str = str(path.resolve())
+                if has_boxes:
+                    if p_str in ai_paths:
+                        label = f"- [AI] {name}"
+                        tt = f" AI 自动预标注文件: {p_str}"
+                    else:
+                        label = f"● {name}"
+                        tt = f"● 人工标注文件: {p_str}"
+                else:
+                    label = f"○ {name}"
+                    tt = f"○ 未标注文件: {p_str}"
+
+                child = QStandardItem(label)
+                child.setData(p_str, Qt.ItemDataRole.UserRole)
+                child.setToolTip(tt)
                 child.setFlags(child.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 top.appendRow(child)
         self.tree.expandAll()
@@ -335,7 +364,19 @@ class AnnotatePage(QWidget):
                 self._open_image(Path(path))
 
     def _open_image(self, path: Path) -> None:
-        # 若有未保存的 boxes 已经在 on_boxes_changed 自动处理
+        if self._current_image is not None and self._current_image != path:
+            # 切换之前先显式保存前一张图片的标注，并弹出已保存提示
+            boxes = self.canvas.get_boxes()
+            split = get_split_for_image(self.project, self._current_image)
+            save_boxes_for_image(self.project, split, self._current_image.name, boxes)
+            InfoBar.success(
+                title="已自动保存",
+                content=f"已保存 {self._current_image.name} 的标注",
+                parent=self,
+                position=InfoBarPosition.TOP,
+                duration=1200,
+            )
+
         self._current_image = path
 
         # 1. 读取 .txt(.txt 可能在原始(未旋转)坐标空间)
@@ -390,6 +431,8 @@ class AnnotatePage(QWidget):
         )
         if boxes:
             self.db.set_done(img_id, True)
+        # 用户手动修改/确认后，转为人工标注 (is_ai = 0)
+        self.db.set_is_ai(img_id, False)
         # 写 .txt
         save_boxes_for_image(self.project, split, self._current_image.name, boxes)
         # 此时 .txt 已在画布坐标系(即 EXIF 旋转后的空间) → 标记 labels_rotated=1
@@ -420,7 +463,7 @@ class AnnotatePage(QWidget):
         from qfluentwidgets import TeachingTip, TeachingTipView
 
         view = TeachingTipView(
-            title="快捷键",
+            title="快捷键提示",
             content=(
                 "• 单击左侧图像:打开标注\n"
                 "• [/]:上一/下一张\n"
@@ -434,8 +477,15 @@ class AnnotatePage(QWidget):
             ),
             icon=FIF.QUESTION,
         )
-        # 锚到触发它的 action 按钮
-        TeachingTip(view, self.tips_action).show()
+        # 锚到触发它的 button 控件
+        target = getattr(self.command_bar, "actionButton", lambda a: None)(self.tips_action) or self.command_bar
+        TeachingTip.make(
+            target=target,
+            view=view,
+            duration=4000,
+            parent=self,
+        )
+
 
     def _on_delete_selected(self) -> None:
         # 通过模拟 Del 键(AnnotationCanvas 监听 Delete/Backspace)
@@ -500,3 +550,167 @@ class AnnotatePage(QWidget):
         child_idx = parent.child(new_row).index()
         self.tree.setCurrentIndex(child_idx)
         self._on_image_chosen(parent.child(new_row))
+
+    # ---- AI 预标注 ----
+    def _on_ai_annotate_current(self) -> None:
+        if self._current_image is None or not self._current_image.exists():
+            InfoBar.warning(
+                title="无法执行预标注",
+                content="请先选择一张待标注图像",
+                parent=self,
+                position=InfoBarPosition.TOP,
+            )
+            return
+
+        from yolo_studio.ui.widgets.auto_label_dialog import AutoLabelDialog
+
+        dialog = AutoLabelDialog(
+            project=self.project,
+            title="AI 辅助预标注 (当前图像)",
+            is_batch=False,
+            parent=self,
+        )
+        if not dialog.exec():
+            return
+
+        model_path = dialog.get_selected_model_path()
+        conf = dialog.get_conf()
+
+        if model_path is None or not model_path.exists():
+            InfoBar.error(
+                title="无可用的模型",
+                content="未找到所选的模型文件，请先在「模型」页训练或导入模型",
+                parent=self,
+                position=InfoBarPosition.TOP,
+            )
+            return
+
+        try:
+            from yolo_studio.core.inference import Predictor, results_to_boxes
+
+            predictor = Predictor(model_path, conf=conf, iou=0.7)
+            results = predictor.predict_image(self._current_image)
+            boxes = results_to_boxes(results)
+
+            if not boxes:
+                InfoBar.info(
+                    title="预标注结果",
+                    content="模型未在该图中检测到任何符合阈值的目标",
+                    parent=self,
+                    position=InfoBarPosition.TOP,
+                )
+                return
+
+            self.canvas.set_boxes(boxes)
+            split = get_split_for_image(self.project, self._current_image)
+            save_boxes_for_image(self.project, split, self._current_image.name, boxes)
+
+            # 标记为 AI 预标注并刷新列表
+            img_id = self.db.upsert_image(str(self._current_image.resolve()))
+            self.db.set_is_ai(img_id, True)
+
+            self._refresh_box_list(boxes)
+            self._populate_image_lists()
+
+            InfoBar.success(
+                title="AI 预标注完成",
+                content=f"使用模型 [{model_path.name}] (conf={conf:.2f}) 成功生成 {len(boxes)} 个目标框",
+                parent=self,
+                position=InfoBarPosition.TOP,
+            )
+        except Exception as e:
+            InfoBar.error(
+                title="预标注失败",
+                content=f"{e}",
+                parent=self,
+                position=InfoBarPosition.TOP,
+            )
+
+    def _on_ai_annotate_batch(self) -> None:
+        from yolo_studio.ui.widgets.auto_label_dialog import AutoLabelDialog
+
+        dialog = AutoLabelDialog(
+            project=self.project,
+            title="批量 AI 辅助预标注",
+            is_batch=True,
+            parent=self,
+        )
+        if not dialog.exec():
+            return
+
+        model_path = dialog.get_selected_model_path()
+        conf = dialog.get_conf()
+        only_unlabeled = dialog.is_only_unlabeled()
+
+        if model_path is None or not model_path.exists():
+            InfoBar.error(
+                title="无可用的模型",
+                content="未找到所选的模型文件，请先在「模型」页训练或导入模型",
+                parent=self,
+                position=InfoBarPosition.TOP,
+            )
+            return
+
+        images = list_all_images_by_split(self.project)
+        all_image_paths = []
+        for s, path_list in images.items():
+            all_image_paths.extend(path_list)
+
+        if not all_image_paths:
+            InfoBar.warning(
+                title="无数据",
+                content="当前项目的数据集中没有图像文件",
+                parent=self,
+                position=InfoBarPosition.TOP,
+            )
+            return
+
+        from qfluentwidgets import StateToolTip
+        from yolo_studio.workers.predict_worker import AutoLabelWorker
+
+        self.state_tooltip = StateToolTip("批量 AI 预标注中", "准备启动后台处理线程...", self)
+        self.state_tooltip.show()
+
+        self._auto_worker = AutoLabelWorker(
+            project=self.project,
+            model_path=model_path,
+            image_paths=all_image_paths,
+            conf=conf,
+            only_unlabeled=only_unlabeled,
+            parent=self,
+        )
+
+        def _on_progress(done, total):
+            if hasattr(self, "state_tooltip") and self.state_tooltip:
+                self.state_tooltip.setContent(f"正在进行 AI 预标注: {done}/{total}")
+
+        def _on_finished(count):
+            if hasattr(self, "state_tooltip") and self.state_tooltip:
+                self.state_tooltip.setState(True)
+                self.state_tooltip = None
+            InfoBar.success(
+                title="批量预标注完成",
+                content=f"已成功完成批量预标注，新增 {count} 张图的标注文件",
+                parent=self,
+                position=InfoBarPosition.TOP,
+                duration=4000,
+            )
+            self._populate_image_lists()
+
+        def _on_failed(err):
+            if hasattr(self, "state_tooltip") and self.state_tooltip:
+                self.state_tooltip.setState(True)
+                self.state_tooltip = None
+            InfoBar.error(
+                title="批量预标注出错",
+                content=err.split("\n", 1)[0],
+                parent=self,
+                position=InfoBarPosition.TOP,
+            )
+
+        self._auto_worker.progress.connect(_on_progress)
+        self._auto_worker.finished_autolabel.connect(_on_finished)
+        self._auto_worker.failed.connect(_on_failed)
+        self._auto_worker.start()
+
+
