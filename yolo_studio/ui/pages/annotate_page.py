@@ -356,6 +356,32 @@ class AnnotatePage(QWidget):
                     self.tree.setCurrentIndex(idx)
                     return
 
+    def _update_tree_item_status(
+        self, path: Path, has_boxes: bool, is_ai: bool = False
+    ) -> None:
+        """更新 TreeView 中指定图像节点的名称和提示，无需重构整个树。"""
+        p_str = str(path.resolve())
+        name = path.name
+        if has_boxes:
+            if is_ai:
+                label = f"- [AI] {name}"
+                tt = f" AI 自动预标注文件: {p_str}"
+            else:
+                label = f"● {name}"
+                tt = f"● 人工标注文件: {p_str}"
+        else:
+            label = f"○ {name}"
+            tt = f"○ 未标注文件: {p_str}"
+
+        for split, top in self._top_items.items():
+            for r in range(top.rowCount()):
+                child = top.child(r)
+                if child and child.data(Qt.ItemDataRole.UserRole) == p_str:
+                    if child.text() != label:
+                        child.setText(label)
+                        child.setToolTip(tt)
+                    return
+
     def _on_image_clicked(self, index) -> None:
         """TreeView 单击回调(只处理子节点;顶层节点不打开图)。"""
         if not index.isValid():
@@ -382,7 +408,21 @@ class AnnotatePage(QWidget):
             if self._is_modified:
                 boxes = self.canvas.get_boxes()
                 split = get_split_for_image(self.project, self._current_image)
+                img_id = self.db.upsert_image(str(self._current_image.resolve()))
+                if split != "unassigned":
+                    self.db.set_split(img_id, split)
+                self.db.replace_annotations(
+                    img_id,
+                    [(b.class_id, b.xc, b.yc, b.w, b.h) for b in boxes],
+                )
+                if boxes:
+                    self.db.set_done(img_id, True)
+                else:
+                    self.db.set_done(img_id, False)
+                self.db.set_is_ai(img_id, False)
                 save_boxes_for_image(self.project, split, self._current_image.name, boxes)
+                self.db.set_labels_rotated(img_id, True)
+                self._update_tree_item_status(self._current_image, has_boxes=bool(boxes), is_ai=False)
                 InfoBar.success(
                     title="已自动保存",
                     content=f"已保存 {self._current_image.name} 的标注",
@@ -450,6 +490,8 @@ class AnnotatePage(QWidget):
         )
         if boxes:
             self.db.set_done(img_id, True)
+        else:
+            self.db.set_done(img_id, False)
         # 用户手动修改/确认后，转为人工标注 (is_ai = 0)
         self.db.set_is_ai(img_id, False)
         # 写 .txt
@@ -459,6 +501,8 @@ class AnnotatePage(QWidget):
         # 刷新 box list + nav label
         self._refresh_box_list(boxes)
         self.nav_label.setText(f"当前:{self._current_image.name}  ({len(boxes)} 框)")
+        # 刷新左侧树节点图标/文字
+        self._update_tree_item_status(self._current_image, has_boxes=bool(boxes), is_ai=False)
 
     def _on_canvas_mode_changed(self, mode: str) -> None:
         if mode == Mode.DRAW.value:
@@ -535,6 +579,8 @@ class AnnotatePage(QWidget):
             )
             if boxes:
                 self.db.set_done(img_id, True)
+            else:
+                self.db.set_done(img_id, False)
             # 用户点击保存，标记为人工标注
             self.db.set_is_ai(img_id, False)
             save_boxes_for_image(self.project, split, self._current_image.name, boxes)
@@ -542,8 +588,8 @@ class AnnotatePage(QWidget):
             self._refresh_box_list(boxes)
             self.nav_label.setText(f"当前:{self._current_image.name}  ({len(boxes)} 框)")
             
-            # 刷新列表，以更新左侧标记
-            self._populate_image_lists()
+            # 刷新节点状态
+            self._update_tree_item_status(self._current_image, has_boxes=bool(boxes), is_ai=False)
 
         self._is_modified = False  # 重置修改状态，避免切换时重复弹提示
         InfoBar.success(
@@ -643,16 +689,29 @@ class AnnotatePage(QWidget):
                 )
                 return
 
-            self.canvas.set_boxes(boxes)
+            self._suppress_save = True
+            try:
+                self.canvas.set_boxes(boxes)
+            finally:
+                self._suppress_save = False
+
             split = get_split_for_image(self.project, self._current_image)
             save_boxes_for_image(self.project, split, self._current_image.name, boxes)
 
-            # 标记为 AI 预标注并刷新列表
+            # 标记为 AI 预标注并刷新列表状态
             img_id = self.db.upsert_image(str(self._current_image.resolve()))
+            if split != "unassigned":
+                self.db.set_split(img_id, split)
+            self.db.replace_annotations(
+                img_id,
+                [(b.class_id, b.xc, b.yc, b.w, b.h) for b in boxes],
+            )
+            self.db.set_done(img_id, True)
             self.db.set_is_ai(img_id, True)
+            self._is_modified = False
 
             self._refresh_box_list(boxes)
-            self._populate_image_lists()
+            self._update_tree_item_status(self._current_image, has_boxes=True, is_ai=True)
 
             InfoBar.success(
                 title="AI 预标注完成",
