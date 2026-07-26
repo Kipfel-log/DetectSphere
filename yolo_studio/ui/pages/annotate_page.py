@@ -304,6 +304,14 @@ class AnnotatePage(QWidget):
 
     def _populate_image_lists(self) -> None:
         """扫描所有 split(按 sha256 去重),填充各 split 的子节点。"""
+        # 记录当前选中的图像路径
+        selected_path = None
+        cur = self.tree.currentIndex()
+        if cur.isValid():
+            item = self.tree_model.itemFromIndex(cur)
+            if item and item.parent():
+                selected_path = item.data(Qt.ItemDataRole.UserRole)
+
         buckets = list_all_images_by_split(self.project)
         try:
             ai_paths = self.db.get_ai_image_paths()
@@ -331,6 +339,10 @@ class AnnotatePage(QWidget):
                 child.setFlags(child.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 top.appendRow(child)
         self.tree.expandAll()
+
+        # 恢复选中状态
+        if selected_path:
+            self._select_in_tree(Path(selected_path))
 
     def _select_in_tree(self, path: Path) -> None:
         """在 TreeView 中定位 path 对应的子项,展开父节点 + 高亮。"""
@@ -511,10 +523,32 @@ class AnnotatePage(QWidget):
 
     def _save_current(self) -> None:
         """手动保存(Ctrl+S)。"""
+        if self._current_image:
+            boxes = self.canvas.get_boxes()
+            split = get_split_for_image(self.project, self._current_image)
+            img_id = self.db.upsert_image(str(self._current_image.resolve()))
+            if split != "unassigned":
+                self.db.set_split(img_id, split)
+            self.db.replace_annotations(
+                img_id,
+                [(b.class_id, b.xc, b.yc, b.w, b.h) for b in boxes],
+            )
+            if boxes:
+                self.db.set_done(img_id, True)
+            # 用户点击保存，标记为人工标注
+            self.db.set_is_ai(img_id, False)
+            save_boxes_for_image(self.project, split, self._current_image.name, boxes)
+            self.db.set_labels_rotated(img_id, True)
+            self._refresh_box_list(boxes)
+            self.nav_label.setText(f"当前:{self._current_image.name}  ({len(boxes)} 框)")
+            
+            # 刷新列表，以更新左侧标记
+            self._populate_image_lists()
+
         self._is_modified = False  # 重置修改状态，避免切换时重复弹提示
         InfoBar.success(
             title="已保存",
-            content="标注已实时保存到 .txt 文件",
+            content="标注已保存",
             parent=self,
             position=InfoBarPosition.TOP,
             duration=1500,
@@ -662,7 +696,8 @@ class AnnotatePage(QWidget):
         images = list_all_images_by_split(self.project)
         all_image_paths = []
         for s, path_list in images.items():
-            all_image_paths.extend(path_list)
+            for p, name, has_boxes in path_list:
+                all_image_paths.append(p)
 
         if not all_image_paths:
             InfoBar.warning(

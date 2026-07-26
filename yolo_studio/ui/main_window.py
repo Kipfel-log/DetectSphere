@@ -110,6 +110,7 @@ class MainWindow(FluentWindow):
         self.project_settings_page.datasetChanged.connect(self.dataset_page.refresh)
         self.train_page.modelRegistered.connect(self._on_model_registered)
         self.model_registry_page.modelsChanged.connect(self.test_page.refresh)
+        self.model_registry_page.modelsChanged.connect(self.train_page.refresh_models)
         self.dataset_page.imagesChanged.connect(self.annotate_page.refresh)
 
         # 填充类定义

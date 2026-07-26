@@ -144,7 +144,6 @@ class TrainPage(QWidget):
         model_row = QHBoxLayout()
         self.model_combo = ComboBox()
         self._refresh_base_models()
-        self.model_combo.addItem("浏览其它 .pt …")
         self.model_combo.currentIndexChanged.connect(self._on_model_changed)
         model_row.addWidget(self.model_combo, 1)
         form_box.addRow("基础模型:", model_row)
@@ -274,6 +273,7 @@ class TrainPage(QWidget):
         if self.project.models_dir.exists():
             for pt in sorted(self.project.models_dir.glob("*.pt")):
                 self.model_combo.addItem(f"项目模型 {pt.name}", userData=str(pt))
+        self.model_combo.addItem("浏览其它 .pt …")
         idx = self.model_combo.findData("yolov8n.pt")
         if idx >= 0:
             self.model_combo.setCurrentIndex(idx)
@@ -289,10 +289,17 @@ class TrainPage(QWidget):
                 "PyTorch 模型 (*.pt)",
             )
             if f:
-                self.model_combo.addItem(Path(f).name, userData=f)
-                self.model_combo.setCurrentIndex(self.model_combo.count() - 1)
+                self.model_combo.blockSignals(True)
+                # 插入到“浏览”选项之前
+                count = self.model_combo.count()
+                self.model_combo.insertItem(count - 1, Path(f).name, userData=f)
+                self.model_combo.setCurrentIndex(count - 1)
+                self.model_combo.blockSignals(False)
             else:
-                self._refresh_base_models()
+                self.model_combo.blockSignals(True)
+                # 如果取消选择，回到默认的第一项以避免闪退
+                self.model_combo.setCurrentIndex(0)
+                self.model_combo.blockSignals(False)
 
     # ---- 日志详细级别 + 折叠 ----
     def _on_verbosity_changed(self, idx: int) -> None:

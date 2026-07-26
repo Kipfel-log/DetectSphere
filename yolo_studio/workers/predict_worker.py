@@ -195,8 +195,13 @@ class AutoLabelWorker(QThread):
                 # dataset/unassigned 里的标注放在 dataset/unassigned/labels，其他在 train/val/test/labels
                 # save_boxes_for_image 能自动确定位置
                 if self._only_unlabeled:
-                    from yolo_studio.core.dataset import _resolve_label_path
-                    lbl_path = _resolve_label_path(self._project, img_path)
+                    from yolo_studio.core.dataset import get_split_for_image
+                    split = get_split_for_image(self._project, img_path)
+                    if split == "unassigned":
+                        lbl_path = self._project.images_dir.parent / "labels" / (img_path.stem + ".txt")
+                    else:
+                        lbl_dir = getattr(self._project, f"{split}_labels")
+                        lbl_path = lbl_dir / (img_path.stem + ".txt")
                     if lbl_path.exists():
                         self.progress.emit(i + 1, total)
                         continue
@@ -204,7 +209,9 @@ class AutoLabelWorker(QThread):
                 results = predictor.predict_image(img_path)
                 boxes = results_to_boxes(results)
                 if boxes:
-                    save_boxes_for_image(self._project, img_path, boxes)
+                    from yolo_studio.core.dataset import get_split_for_image
+                    split = get_split_for_image(self._project, img_path)
+                    save_boxes_for_image(self._project, split, img_path.name, boxes)
                     try:
                         from yolo_studio.core.db import ProjectDB
                         db = ProjectDB(self._project.db_path)
