@@ -676,9 +676,10 @@ class AnnotatePage(QWidget):
         try:
             from yolo_studio.core.inference import Predictor, results_to_boxes
 
+            class_name_mapping = {c.name: c.class_id for c in self.project.classes} if self.project.classes else None
             predictor = Predictor(model_path, conf=conf, iou=0.7)
             results = predictor.predict_image(self._current_image)
-            boxes = results_to_boxes(results)
+            boxes = results_to_boxes(results, class_name_mapping=class_name_mapping)
 
             if not boxes:
                 InfoBar.info(
@@ -708,6 +709,7 @@ class AnnotatePage(QWidget):
             )
             self.db.set_done(img_id, True)
             self.db.set_is_ai(img_id, True)
+            self.db.set_labels_rotated(img_id, True)
             self._is_modified = False
 
             self._refresh_box_list(boxes)

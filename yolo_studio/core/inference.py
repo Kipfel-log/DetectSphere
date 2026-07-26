@@ -123,8 +123,11 @@ class Predictor:
             return frame
 
 
-def results_to_boxes(results) -> list:
-    """将 Ultralytics predict 返回的 results 列表转换为项目内部 Box 对象列表。"""
+def results_to_boxes(results, class_name_mapping: dict[str, int] | None = None) -> list:
+    """将 Ultralytics predict 返回的 results 列表转换为项目内部 Box 对象列表。
+
+    如果提供 class_name_mapping ({class_name: project_class_id}),将尝试按照类别名称映射到项目 class_id。
+    """
     from yolo_studio.core.io.labels import Box
 
     boxes: list[Box] = []
@@ -135,10 +138,18 @@ def results_to_boxes(results) -> list:
             continue
         xywhn = r.boxes.xywhn.cpu().numpy()
         classes = r.boxes.cls.cpu().numpy()
+        names = getattr(r, "names", {}) or {}
         for b, c in zip(xywhn, classes):
+            model_cls_id = int(c)
+            final_cls_id = model_cls_id
+            if class_name_mapping and names:
+                cls_name = names.get(model_cls_id)
+                if cls_name in class_name_mapping:
+                    final_cls_id = class_name_mapping[cls_name]
+
             boxes.append(
                 Box(
-                    class_id=int(c),
+                    class_id=final_cls_id,
                     xc=float(b[0]),
                     yc=float(b[1]),
                     w=float(b[2]),

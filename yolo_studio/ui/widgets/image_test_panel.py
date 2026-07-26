@@ -230,9 +230,20 @@ class ImageTestPanel(QWidget):
         image_path, results = out[0]
 
         import cv2
+        import numpy as np
+        from PIL import Image, ImageOps
         from yolo_studio.core.inference import Predictor
 
-        frame = cv2.imread(str(image_path))
+        try:
+            pil_img = Image.open(str(image_path))
+            pil_img = ImageOps.exif_transpose(pil_img)
+            if pil_img.mode != "RGB":
+                pil_img = pil_img.convert("RGB")
+            rgb_frame = np.array(pil_img)
+            frame = cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
+        except Exception:
+            frame = cv2.imread(str(image_path))
+
         if frame is None:
             return
 

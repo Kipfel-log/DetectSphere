@@ -187,6 +187,10 @@ class AutoLabelWorker(QThread):
             from yolo_studio.core.io.labels import has_label_file
 
             predictor = Predictor(self._model_path, conf=self._conf, iou=self._iou)
+            class_name_mapping = {
+                c.name: c.class_id for c in getattr(self._project, "classes", [])
+            } if getattr(self._project, "classes", None) else None
+
             count = 0
             total = len(self._image_paths)
 
@@ -207,7 +211,7 @@ class AutoLabelWorker(QThread):
                         continue
 
                 results = predictor.predict_image(img_path)
-                boxes = results_to_boxes(results)
+                boxes = results_to_boxes(results, class_name_mapping=class_name_mapping)
                 if boxes:
                     from yolo_studio.core.dataset import get_split_for_image
                     split = get_split_for_image(self._project, img_path)
@@ -216,7 +220,15 @@ class AutoLabelWorker(QThread):
                         from yolo_studio.core.db import ProjectDB
                         db = ProjectDB(self._project.db_path)
                         img_id = db.upsert_image(str(img_path.resolve()))
+                        if split != "unassigned":
+                            db.set_split(img_id, split)
+                        db.replace_annotations(
+                            img_id,
+                            [(b.class_id, b.xc, b.yc, b.w, b.h) for b in boxes],
+                        )
+                        db.set_done(img_id, True)
                         db.set_is_ai(img_id, True)
+                        db.set_labels_rotated(img_id, True)
                     except Exception:
                         pass
                     count += 1

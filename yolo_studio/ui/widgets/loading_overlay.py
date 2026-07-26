@@ -14,7 +14,6 @@ from qfluentwidgets import (
     BodyLabel,
     CaptionLabel,
     CardWidget,
-    IndeterminateProgressRing,
     SubtitleLabel,
     TitleLabel,
 )
@@ -65,15 +64,6 @@ class LoadingOverlay(QWidget):
         self.project_label = TitleLabel(project_name, card)
         self.project_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         card_layout.addWidget(self.project_label)
-
-        # 环形加载动画
-        ring_box = QHBoxLayout()
-        ring_box.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.ring = IndeterminateProgressRing(card)
-        self.ring.setFixedSize(48, 48)
-        self.ring.setStrokeWidth(4)
-        ring_box.addWidget(self.ring)
-        card_layout.addLayout(ring_box)
 
         # 底部状态提示
         self.status_label = CaptionLabel("正在异步初始化核心数据组件...", card)
