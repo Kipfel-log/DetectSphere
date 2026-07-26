@@ -63,6 +63,7 @@ class AnnotatePage(QWidget):
         self.db = db
         self._current_image: Optional[Path] = None
         self._suppress_save = False
+        self._is_modified = False
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -365,19 +366,21 @@ class AnnotatePage(QWidget):
 
     def _open_image(self, path: Path) -> None:
         if self._current_image is not None and self._current_image != path:
-            # 切换之前先显式保存前一张图片的标注，并弹出已保存提示
-            boxes = self.canvas.get_boxes()
-            split = get_split_for_image(self.project, self._current_image)
-            save_boxes_for_image(self.project, split, self._current_image.name, boxes)
-            InfoBar.success(
-                title="已自动保存",
-                content=f"已保存 {self._current_image.name} 的标注",
-                parent=self,
-                position=InfoBarPosition.TOP,
-                duration=1200,
-            )
+            # 切换之前，如果有改动才提示已保存
+            if self._is_modified:
+                boxes = self.canvas.get_boxes()
+                split = get_split_for_image(self.project, self._current_image)
+                save_boxes_for_image(self.project, split, self._current_image.name, boxes)
+                InfoBar.success(
+                    title="已自动保存",
+                    content=f"已保存 {self._current_image.name} 的标注",
+                    parent=self,
+                    position=InfoBarPosition.TOP,
+                    duration=1200,
+                )
 
         self._current_image = path
+        self._is_modified = False
 
         # 1. 读取 .txt(.txt 可能在原始(未旋转)坐标空间)
         boxes = read_yolo_txt(self._labels_path_for(path))
@@ -419,6 +422,10 @@ class AnnotatePage(QWidget):
     def _on_boxes_changed(self, boxes: list[Box]) -> None:
         if self._suppress_save or self._current_image is None:
             return
+        
+        # 标记已修改
+        self._is_modified = True
+        
         # 自动保存(用户真实修改触发的)
         split = get_split_for_image(self.project, self._current_image)
         # 标 ID upsert + 写 .txt
@@ -503,7 +510,8 @@ class AnnotatePage(QWidget):
         self.canvas.cycle_selected_class()
 
     def _save_current(self) -> None:
-        """手动保存(其实已经自动保存了,这里给个提示)。"""
+        """手动保存(Ctrl+S)。"""
+        self._is_modified = False  # 重置修改状态，避免切换时重复弹提示
         InfoBar.success(
             title="已保存",
             content="标注已实时保存到 .txt 文件",

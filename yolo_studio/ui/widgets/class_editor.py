@@ -38,7 +38,16 @@ class _ClassModel(QAbstractTableModel):
 
     def __init__(self, classes: list[ClassDef], parent=None) -> None:
         super().__init__(parent)
-        self._classes = [ClassDef(class_id=c.class_id, name=c.name, color=c.color) for c in classes]
+        # 复制一份，同时为没有颜色的类自动分配默认调色板颜色
+        used_colors: set[str] = {c.color for c in classes if c.color}
+        result: list[ClassDef] = []
+        for c in classes:
+            color = c.color
+            if not color:
+                color = default_color_for(c.class_id, used_colors)
+                used_colors.add(color)
+            result.append(ClassDef(class_id=c.class_id, name=c.name, color=color))
+        self._classes = result
 
     def rowCount(self, parent=QModelIndex()) -> int:
         return 0 if parent.isValid() else len(self._classes)
@@ -296,12 +305,14 @@ class ClassEditor(QWidget):
         self._has_changes = True
 
     def _on_table_double_clicked(self, index: QModelIndex) -> None:
-        """双击颜色列 → 打开 ColorDialog 选色。"""
+        """双击颜色列 → 打开 ColorDialog 选色（以顶级主窗口为父级，确保全屏弹出）。"""
         if not index.isValid() or index.column() != 2:
             return
         row = index.row()
         cur_color = self._model._classes[row].color or "#888888"
-        dlg = ColorDialog(QColor(cur_color), f"选择类 {row} 的颜色", self)
+        # 使用顶级窗口作为父级，避免 ColorDialog 被嵌入小区域内
+        top_window = self.window()
+        dlg = ColorDialog(QColor(cur_color), f"选择类 {row} 的颜色", top_window)
         if dlg.exec():
             new_hex = dlg.color.name().lower()  # "#rrggbb"
             self._model.set_color(row, new_hex)

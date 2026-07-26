@@ -1,31 +1,19 @@
-"""启动器对话框 — 启动应用时显示。
-
-功能:
-- 列出最近项目
-- 打开现有项目
-- 创建新项目(目录 + 名称 + 初始类)
-- 浏览其他位置
-- 取消退出
-
-返回:Project 实例(用户在对话框内点击"打开"),或 None(用户取消)。
-"""
 from __future__ import annotations
 
 import time
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import QEventLoop, Qt
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QFileDialog,
+    QFrame,
     QHBoxLayout,
     QHeaderView,
-    QInputDialog,
     QListWidget,
     QListWidgetItem,
-    QPushButton,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
@@ -33,12 +21,15 @@ from PySide6.QtWidgets import (
 from qfluentwidgets import (
     BodyLabel,
     CaptionLabel,
+    CardWidget,
     FluentIcon as FIF,
+    FluentWindow,
     LineEdit,
     MessageDialog,
     PrimaryPushButton,
     PushButton,
     StrongBodyLabel,
+    SubtitleLabel,
     TableWidget,
     TitleLabel,
     TransparentToolButton,
@@ -51,25 +42,13 @@ from yolo_studio.core.project_manager import ProjectEntry, ProjectManager
 
 
 class NewProjectDialog(QDialog):
-    """新建项目对话框。"""
+    """新建项目对话框（保持标准 QDialog）。"""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("新建项目")
         self.resize(480, 360)
         self._result: Optional[tuple[Path, str, list[ClassDef]]] = None
-
-        try:
-            from qfluentwidgets.window import WindowEffect
-            self.window_effect = WindowEffect()
-            self.window_effect.setAcrylicEffect(int(self.winId()), "F8F9FACC", True)
-        except Exception:
-            try:
-                from qfluentwidgets import WindowEffect
-                self.window_effect = WindowEffect()
-                self.window_effect.setAcrylicEffect(int(self.winId()), "F8F9FACC", True)
-            except Exception:
-                pass
 
         layout = QVBoxLayout(self)
 
@@ -91,18 +70,15 @@ class NewProjectDialog(QDialog):
 
         layout.addWidget(StrongBodyLabel("初始类(每行一个,从 0 开始):"))
 
-        # 用 TableWidget(单列 "类名")取代原来的 LineEdit(toPlainText 错位)
         self.classes_edit = TableWidget()
         self.classes_edit.setColumnCount(1)
         self.classes_edit.setHorizontalHeaderLabels(["类名"])
         self.classes_edit.setRowCount(1)
         self.classes_edit.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.classes_edit.setAlternatingRowColors(True)
-        # 默认放一个空行(用户直接在第一个格子里输入第一个类名)
         self.classes_edit.setItem(0, 0, QTableWidgetItem(""))
         layout.addWidget(self.classes_edit, 1)
 
-        # "+" 加一行;行内直接编辑即可
         add_row = QHBoxLayout()
         add_row.addStretch(1)
         add_btn = PushButton(FIF.ADD, "添加类")
@@ -122,7 +98,6 @@ class NewProjectDialog(QDialog):
         layout.addLayout(btn_row)
 
     def _add_class_row(self) -> None:
-        """新增一行(空),光标定位到该行的类名单元格。"""
         r = self.classes_edit.rowCount()
         self.classes_edit.insertRow(r)
         item = QTableWidgetItem("")
@@ -144,7 +119,6 @@ class NewProjectDialog(QDialog):
         if not parent_dir.exists():
             MessageDialog("新建项目", f"目录不存在:\n{parent_dir}", self).exec()
             return
-        # 从 TableWidget 收集类名(每行 1 个)
         class_names: list[str] = []
         for r in range(self.classes_edit.rowCount()):
             item = self.classes_edit.item(r, 0)
@@ -165,82 +139,142 @@ class NewProjectDialog(QDialog):
         return self._result
 
 
-class LauncherDialog(QDialog):
-    """启动器主对话框。"""
+class LauncherDialog(FluentWindow):
+    """启动器主窗口。
+
+    继承自 FluentWindow，与主工作台共享完整的 Windows 11 Fluent 风格。
+    隐藏导航侧边栏，内容区承载最近项目列表与操作按钮。
+    使用 QEventLoop 实现阻塞式 run() 行为（替代 QDialog.exec()）。
+    """
 
     def __init__(self) -> None:
-        super().__init__(None)
+        super().__init__()
         self.setWindowTitle("DetectSphere — 选择项目")
-        self.resize(760, 500)
+        self.resize(840, 580)
         self._manager = ProjectManager()
         self._selected: Optional[Project] = None
+        self._loop: Optional[QEventLoop] = None
 
-        # 原生半透明 Acrylic 玻璃材质效果
-        try:
-            from qfluentwidgets.window import WindowEffect
-            self.window_effect = WindowEffect()
-            self.window_effect.setAcrylicEffect(int(self.winId()), "F8F9FACC", True)
-        except Exception:
-            try:
-                from qfluentwidgets import WindowEffect
-                self.window_effect = WindowEffect()
-                self.window_effect.setAcrylicEffect(int(self.winId()), "F8F9FACC", True)
-            except Exception:
-                pass
+        # ── 隐藏导航侧边栏（启动器无需导航）─────────────────────────────
+        self.navigationInterface.hide()
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(24)
+        # ── 构建内容页面 ─────────────────────────────────────────────────
+        page = QWidget()
+        page.setObjectName("launcherContentPage")
+        # 直接加入 stackedWidget 并设为当前页
+        self.stackedWidget.addWidget(page)
+        self.stackedWidget.setCurrentWidget(page)
 
-        # 左侧:项目列表
-        left = QVBoxLayout()
-        left.addWidget(TitleLabel("最近项目"))
+        outer = QHBoxLayout(page)
+        outer.setContentsMargins(28, 20, 28, 20)
+        outer.setSpacing(20)
+
+        # ── 左侧：最近项目列表 ───────────────────────────────────────────────
+        left_card = CardWidget()
+        left_layout = QVBoxLayout(left_card)
+        left_layout.setContentsMargins(16, 16, 16, 16)
+        left_layout.setSpacing(10)
+
+        list_hdr = QHBoxLayout()
+        list_hdr.addWidget(SubtitleLabel("最近项目"))
+        list_hdr.addStretch(1)
+        left_layout.addLayout(list_hdr)
+
         self.list_widget = QListWidget()
+        self.list_widget.setStyleSheet("""
+            QListWidget {
+                background: transparent;
+                border: none;
+            }
+            QListWidget::item { padding: 2px 0; border-radius: 6px; }
+            QListWidget::item:selected { background: rgba(0, 90, 200, 0.10); }
+            QListWidget::item:hover { background: rgba(0, 0, 0, 0.04); }
+        """)
         self.list_widget.itemDoubleClicked.connect(self._on_item_double_clicked)
         self.list_widget.itemSelectionChanged.connect(self._on_selection_changed)
-        left.addWidget(self.list_widget, 1)
+        left_layout.addWidget(self.list_widget, 1)
         self._refresh_list()
 
-        # 右侧:操作
-        right = QVBoxLayout()
-        right.addWidget(TitleLabel("DetectSphere"))
-        right.addWidget(BodyLabel("通用 YOLO 桌面工作台\n数据集 · 标注 · 训练 · 测试 · 导出"))
-        right.addSpacing(16)
-        right.addWidget(CaptionLabel(f"项目根:{REPO_ROOT}"))
+        # ── 右侧：操作卡片 ───────────────────────────────────────────────────
+        right_card = CardWidget()
+        right_card.setFixedWidth(240)
+        right_layout = QVBoxLayout(right_card)
+        right_layout.setContentsMargins(20, 20, 20, 20)
+        right_layout.setSpacing(8)
 
-        right.addSpacing(16)
-        self.open_btn = PrimaryPushButton("打开选中项目")
+        app_title = TitleLabel("DetectSphere")
+        right_layout.addWidget(app_title)
+        right_layout.addWidget(BodyLabel("通用 YOLO 桌面工作台\n数据集 · 标注 · 训练 · 测试 · 导出"))
+        right_layout.addSpacing(8)
+        right_layout.addWidget(CaptionLabel(f"项目根:{REPO_ROOT}"))
+
+        # 分割线
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet("QFrame { color: rgba(0,0,0,0.1); margin: 4px 0; }")
+        right_layout.addWidget(sep)
+
+        self.open_btn = PrimaryPushButton(FIF.FOLDER, "打开选中项目")
         self.open_btn.setEnabled(False)
         self.open_btn.clicked.connect(self._on_open_clicked)
-        right.addWidget(self.open_btn)
+        right_layout.addWidget(self.open_btn)
 
-        self.new_btn = PushButton("新建项目")
+        self.new_btn = PushButton(FIF.ADD, "新建项目")
         self.new_btn.clicked.connect(self._on_new_clicked)
-        right.addWidget(self.new_btn)
+        right_layout.addWidget(self.new_btn)
 
-        self.browse_btn = PushButton("浏览其他位置…")
+        self.browse_btn = PushButton(FIF.SEARCH, "浏览其他位置…")
         self.browse_btn.clicked.connect(self._on_browse_clicked)
-        right.addWidget(self.browse_btn)
+        right_layout.addWidget(self.browse_btn)
 
-        right.addStretch(1)
+        right_layout.addStretch(1)
 
-        self.exit_btn = PushButton("退出")
-        self.exit_btn.clicked.connect(self.reject)
-        right.addWidget(self.exit_btn)
+        self.exit_btn = PushButton(FIF.CLOSE, "退出")
+        self.exit_btn.clicked.connect(self._reject_launcher)
+        right_layout.addWidget(self.exit_btn)
 
-        container_left = QWidget()
-        container_left.setLayout(left)
-        container_right = QWidget()
-        container_right.setLayout(right)
+        outer.addWidget(left_card, 1)
+        outer.addWidget(right_card, 0)
 
-        layout.addWidget(container_left, 2)
-        layout.addWidget(container_right, 1)
+
+    # ── 公开 API ─────────────────────────────────────────────────────────
+
+    def run(self) -> Optional[Project]:
+        """显示窗口并阻塞，直到用户选定项目或取消。返回 Project 或 None。"""
+        # 屏幕居中
+        screen = QApplication.primaryScreen().geometry()
+        self.move(
+            (screen.width() - self.width()) // 2,
+            (screen.height() - self.height()) // 2,
+        )
+        self._loop = QEventLoop()
+        self.show()
+        self._loop.exec()
+        return self._selected
+
+    # ── 内部回调 ─────────────────────────────────────────────────────────
+
+    def _accept_project(self, project: Project) -> None:
+        self._selected = project
+        if self._loop and self._loop.isRunning():
+            self._loop.quit()
+        self.hide()
+
+    def _reject_launcher(self) -> None:
+        self._selected = None
+        if self._loop and self._loop.isRunning():
+            self._loop.quit()
+        self.hide()
+
+    def closeEvent(self, event) -> None:
+        if self._loop and self._loop.isRunning():
+            self._loop.quit()
+        super().closeEvent(event)
 
     def _refresh_list(self) -> None:
         self.list_widget.clear()
         for entry in self._manager.list_recent():
             self._add_entry_item(entry)
-        # 把已存在但未在列表里的项目也加入(发现式)
         known = {e.path for e in self._manager.list_recent()}
         projects_root = REPO_ROOT / "projects"
         if projects_root.exists():
@@ -249,7 +283,6 @@ class LauncherDialog(QDialog):
                     continue
                 if str(child.resolve()) in known:
                     continue
-                # 只显示含 dataset.yaml 的
                 if (child / "configs" / "dataset.yaml").exists():
                     entry = ProjectEntry(
                         path=str(child.resolve()),
@@ -262,7 +295,6 @@ class LauncherDialog(QDialog):
 
     def _add_entry_item(self, entry: ProjectEntry) -> None:
         last = time.strftime("%Y-%m-%d %H:%M", time.localtime(entry.last_opened))
-        # 用 setItemWidget 装复合 widget:左 label + 右删除按钮
         item = QListWidgetItem()
         item.setData(Qt.ItemDataRole.UserRole, entry.path)
 
@@ -280,7 +312,6 @@ class LauncherDialog(QDialog):
         del_btn.clicked.connect(lambda _checked=False, p=entry.path: self._on_delete_entry(p))
         h.addWidget(del_btn, 0, Qt.AlignmentFlag.AlignTop)
         w.setLayout(h)
-        # 设 item 高度给 widget 留空间
         item.setSizeHint(w.sizeHint())
         self.list_widget.addItem(item)
         self.list_widget.setItemWidget(item, w)
@@ -289,7 +320,6 @@ class LauncherDialog(QDialog):
         self.open_btn.setEnabled(self.list_widget.currentItem() is not None)
 
     def _on_delete_entry(self, path: str) -> None:
-        """从启动器列表移除某项目(项目文件保留在磁盘)。"""
         name = Path(path).name
         if not MessageDialog(
             "删除项目",
@@ -298,7 +328,6 @@ class LauncherDialog(QDialog):
         ).exec():
             return
         self._manager.forget(path)
-        # 移除对应 QListWidgetItem
         for i in range(self.list_widget.count() - 1, -1, -1):
             it = self.list_widget.item(i)
             if it.data(Qt.ItemDataRole.UserRole) == path:
@@ -319,7 +348,7 @@ class LauncherDialog(QDialog):
             self._open_path(Path(d))
 
     def _on_new_clicked(self) -> None:
-        dlg = NewProjectDialog(self)
+        dlg = NewProjectDialog(None)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             res = dlg.result_project()
             if res is None:
@@ -330,8 +359,7 @@ class LauncherDialog(QDialog):
             except Exception as e:
                 MessageDialog("新建项目失败", str(e), self).exec()
                 return
-            self._selected = proj
-            self.accept()
+            self._accept_project(proj)
 
     def _open_path(self, path: Path) -> None:
         try:
@@ -339,12 +367,4 @@ class LauncherDialog(QDialog):
         except Exception as e:
             MessageDialog("打开项目失败", str(e), self).exec()
             return
-        self._selected = proj
-        self.accept()
-
-    # ---- 公开 API ----
-    def run(self) -> Optional[Project]:
-        """阻塞运行对话框,返回选中的 Project 或 None(用户取消)。"""
-        if self.exec() == QDialog.DialogCode.Accepted:
-            return self._selected
-        return None
+        self._accept_project(proj)

@@ -8,6 +8,8 @@
 """
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import QApplication
 from qfluentwidgets import (
@@ -33,6 +35,7 @@ class MainWindow(FluentWindow):
 
     ready = Signal()  # 所有页面装载完毕，可以关闭 LoadingWindow 了
     status_changed = Signal(str)  # 构造进度状态文字
+    switchProjectRequested = Signal()
 
     def __init__(self, project: Project, loaded_data: LoadedProjectData | None = None) -> None:
         super().__init__()
@@ -126,6 +129,13 @@ class MainWindow(FluentWindow):
         self.addSubInterface(self.model_registry_page, FIF.ROBOT, "模型", position=NavigationItemPosition.TOP)
         self.addSubInterface(self.test_page, FIF.CAMERA, "测试", position=NavigationItemPosition.TOP)
         self.navigationInterface.addItem(
+            routeKey="openFolder",
+            icon=FIF.FOLDER,
+            text="打开项目文件夹",
+            onClick=self._open_project_folder,
+            position=NavigationItemPosition.BOTTOM,
+        )
+        self.navigationInterface.addItem(
             routeKey="switchProject",
             icon=FIF.RETURN,
             text="切换项目",
@@ -148,14 +158,14 @@ class MainWindow(FluentWindow):
 
     # ---- 切换项目 ----
     def request_switch_project(self) -> None:
-        if not MessageDialog(
-            "切换项目",
-            "关闭当前项目并返回启动器?\n\n(未保存的标注已在修改时自动写入 .txt)",
-            self,
-        ).exec():
+        if not MessageDialog("切换项目", "确定要关闭当前项目并返回启动器吗?", self).exec():
             return
-        self._switching_project = True
+        self.switchProjectRequested.emit()
         self.close()
+
+    def _open_project_folder(self) -> None:
+        """用系统默认文件管理器打开项目根目录。"""
+        os.startfile(str(self.project.root))
 
     # ---- 关闭事件 ----
     def closeEvent(self, event) -> None:
